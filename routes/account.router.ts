@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { AccountService } from "../services/account.service.js";
 import { requireAuth } from "../auth/middleware.js";
+import { apiLimiter } from "../auth/rateLimit.js";
 import type { Redis } from "../database/redis.js";
 import type { Database } from "../database/db.js";
 import type { RoomService } from "../services/room.service.js";
@@ -97,8 +98,11 @@ export function createAccountRouter(
     res.json(await filterAdultRows(userId, items));
   };
 
-  // All routes require authentication
-  router.use(requireAuth);
+  // All routes require authentication. The limiter keys by account rather
+  // than IP (see apiLimiter): a household behind one NAT must not share a
+  // budget, and what is worth bounding here is one token enumerating or
+  // hammering the library.
+  router.use(requireAuth, apiLimiter(redis));
 
   // ── GET /api/account/me ───────────────────────────────────
   router.get("/me", async (req: Request, res: Response) => {

@@ -13,6 +13,8 @@ interface RateLimitOptions {
   prefix: string;
   /** Derive the rate-limit key from the request (default: IP) */
   keyFn?: (req: Request) => string;
+  /** Requests this returns true for are passed through uncounted. */
+  skip?: (req: Request) => boolean;
 }
 
 /**
@@ -34,6 +36,8 @@ export function redisRateLimit(opts: RateLimitOptions) {
     });
 
   return async (req: Request, res: Response, next: NextFunction) => {
+    if (opts.skip?.(req)) return next();
+
     const identifier = keyFn(req);
     const key = `${opts.prefix}:${identifier}`;
 
@@ -183,5 +187,129 @@ export function shareLimiter(redis: RedisClient) {
     windowSeconds: 60 * 5,   // 5 min window
     max:           30,        // 30 shares per user
     keyFn:         (req) => req.user!.sub,
+  });
+}
+// ── General-purpose limiters ─────────────────────────────────────────────────
+//
+// The limiters above each guard one specific abuse (credential stuffing, mail
+// flooding, share spam) and are deliberately tight. These are the opposite:
+// broad backstops so that *no* route is completely unbounded, sized well above
+// what any honest client does. A page that fires a dozen parallel calls on
+// load, or a TV polling every few seconds, must never see one of these.
+
+/**
+ * Keyed by account when the caller is authenticated, by IP otherwise.
+ *
+ * Behind a shared NAT — a household, a school, a corporate egress — a pure IP
+ * budget is spent by whoever browses hardest and denies everyone else. Once a
+ * request carries a verified token there is a better identity available, so
+ * use it. Falls back to IP for anonymous traffic, which is also where the
+ * per-IP budget genuinely belongs.
+ */
+function userOrIpKey(req: Request): string {
+  if (req.user?.sub) return `u:${req.user.sub}`;
+
+  const ip =
+    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
+    req.socket.remoteAddress ??
+    "unknown";
+
+  return `ip:${ip}`;
+}
+
+/**
+ * Backstop for the signed-in API surface (account library, social, rooms).
+ * A busy page load is tens of requests; 600/min leaves an order of magnitude
+ * of headroom while still bounding a scripted enumeration of, say, the
+ * follower graph.
+ */
+export function apiLimiter(redis: RedisClient) {
+  return redisRateLimit({
+    redis,
+    prefix:        "rl:api",
+    windowSeconds: 60,
+    max:           600,
+    keyFn:         userOrIpKey,
+  });
+}
+
+/**
+ * Media the browser can only fetch through us (`/api/cast-proxy`).
+ *
+ * This is the one path where a *single* honest viewer makes hundreds of
+ * requests: the proxy rewrites every rendition and every segment URI in an HLS
+ * manifest to stay looped through itself, so a two-hour film is thousands of
+ * calls, and seeking multiplies that. It is also the path where a 429 does the
+ * most damage — hls.js reports it as a fatal network error mid-playback, not
+ * as "slow down". So it gets its own budget, an order of magnitude above the
+ * rest of the API, rather than sharing one with page navigation.
+ */
+export function castProxyLimiter(redis: RedisClient) {
+  return redisRateLimit({
+    redis,
+    prefix:        "rl:castproxy",
+    windowSeconds: 60,
+    max:           6000,
+  });
+}
+
+/**
+ * Backstop for anonymous/public endpoints — static pages, the version
+ * handshake, provider catalogues. Higher because a single page load pulls a
+ * document plus its assets, and several people share one NAT.
+ */
+export function publicLimiter(redis: RedisClient, opts: { skip?: (req: Request) => boolean } = {}) {
+  return redisRateLimit({
+    redis,
+    prefix:        "rl:public",
+    windowSeconds: 60,
+    max:           1000,
+    skip:          opts.skip,
+  });
+}
+
+/**
+ * Admin-only routers (server settings, the local-provider library). Every
+ * caller here is one authenticated administrator doing one thing at a time;
+ * chunked uploads are the only bursty case and they are well inside this.
+ */
+export function adminLimiter(redis: RedisClient) {
+  return redisRateLimit({
+    redis,
+    prefix:        "rl:admin",
+    windowSeconds: 60,
+    max:           300,
+    keyFn:         userOrIpKey,
+  });
+}
+
+/**
+ * Unauthenticated auth-adjacent endpoints that aren't a login attempt and so
+ * don't belong under `loginLimiter`'s 15-minute budget: token redemption
+ * (`/verify-email`, `/password-reset/confirm`, `/oauth/exchange`) and the
+ * OAuth callback. Each of those consumes a single-use secret, so the thing to
+ * bound is guessing throughput.
+ */
+export function authTokenLimiter(redis: RedisClient) {
+  return redisRateLimit({
+    redis,
+    prefix:        "rl:authtoken",
+    windowSeconds: 60 * 10,
+    max:           30,
+  });
+}
+
+/**
+ * Binding a TV to an account. Per signed-in user, not per IP: the phone half
+ * is authenticated, and the number of televisions one person pairs in ten
+ * minutes is small. Bounds an authenticated attacker spraying user codes.
+ */
+export function deviceClaimLimiter(redis: RedisClient) {
+  return redisRateLimit({
+    redis,
+    prefix:        "rl:device:claim",
+    windowSeconds: 60 * 10,
+    max:           20,
+    keyFn:         userOrIpKey,
   });
 }

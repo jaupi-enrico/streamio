@@ -14,6 +14,8 @@ import { pipeline } from "node:stream/promises";
 import { Router, type Request, type Response } from "express";
 import type { Database } from "../database/db.js";
 import { requireAuth, createRequireAdmin } from "../auth/middleware.js";
+import { adminLimiter } from "../auth/rateLimit.js";
+import type { Redis } from "../database/redis.js";
 import { TranscodeService } from "../services/transcode.service.js";
 import { originalDirFor, removeMediaFiles } from "../services/local-media-storage.js";
 import {
@@ -76,12 +78,12 @@ async function findOriginalPath(fileId: string): Promise<string | null> {
   }
 }
 
-export function createLocalProviderRouter(db: Database): Router {
+export function createLocalProviderRouter(db: Database, redis: Redis): Router {
   const router = Router();
   const transcodeService = new TranscodeService(db);
 
   // Server-wide admin-only management, same gate as settings.router.ts.
-  router.use(requireAuth, createRequireAdmin(db));
+  router.use(requireAuth, createRequireAdmin(db), adminLimiter(redis));
 
   // In memory, like the transcode queue it feeds: a session only spans one
   // admin's upload, and a restart mid-upload loses the browser's side of it

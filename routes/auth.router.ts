@@ -15,6 +15,8 @@ import {
   refreshLimiter,
   deviceStartLimiter,
   devicePollLimiter,
+  authTokenLimiter,
+  deviceClaimLimiter,
 } from "../auth/rateLimit.js";
 import { requireAuth } from "../auth/middleware.js";
 import {
@@ -313,7 +315,7 @@ export function createAuthRouter(db: Database, redis: Redis): Router {
   );
 
   // ── POST /api/auth/logout ─────────────────────────────────
-  router.post("/logout", async (req: Request, res: Response) => {
+  router.post("/logout", authTokenLimiter(redis), async (req: Request, res: Response) => {
     const rawToken = readRefreshToken(req);
 
     if (rawToken) {
@@ -329,7 +331,10 @@ export function createAuthRouter(db: Database, redis: Redis): Router {
   // Consumes the token `register()` mails out. `public/verify-email.html`
   // (and the app's verify-email screen) have always POSTed here; the route
   // itself was missing, so the link in the email 404'd.
-  router.post("/verify-email", async (req: Request, res: Response) => {
+  // Consumes a single-use token, so the thing to bound is guessing
+  // throughput rather than sign-in attempts — hence authTokenLimiter and not
+  // loginLimiter, whose budget is spent by honest retries of a password.
+  router.post("/verify-email", authTokenLimiter(redis), async (req: Request, res: Response) => {
     const { token } = req.body ?? {};
 
     if (!token || typeof token !== "string") {
@@ -389,6 +394,7 @@ export function createAuthRouter(db: Database, redis: Redis): Router {
   // ── POST /api/auth/password-reset/confirm ─────────────────
   router.post(
     "/password-reset/confirm",
+    authTokenLimiter(redis),
     async (req: Request, res: Response) => {
       const { token, password } = req.body;
       if (!token || !password) {
@@ -415,7 +421,7 @@ export function createAuthRouter(db: Database, redis: Redis): Router {
   // origin, so the refresh cookie is finally set on the host the browser is
   // actually on. Registered above `/:provider` — that route would otherwise
   // swallow "oauth" as a provider name.
-  router.post("/oauth/exchange", async (req: Request, res: Response) => {
+  router.post("/oauth/exchange", authTokenLimiter(redis), async (req: Request, res: Response) => {
     const { code } = req.body ?? {};
 
     if (!code || typeof code !== "string") {
@@ -558,7 +564,7 @@ export function createAuthRouter(db: Database, redis: Redis): Router {
   // The phone half: a signed-in browser binding its own account to the code on
   // the television. requireAuth is the entire security model of the approval
   // step — whoever is signed in here is the account the TV receives.
-  router.post("/device/claim", requireAuth, async (req: Request, res: Response) => {
+  router.post("/device/claim", requireAuth, deviceClaimLimiter(redis), async (req: Request, res: Response) => {
     const rawCode = req.body?.user_code;
     if (typeof rawCode !== "string" || !rawCode.trim()) {
       res.status(400).json({ error: "user_code is required." });

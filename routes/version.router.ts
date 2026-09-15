@@ -4,13 +4,20 @@ import { SettingsService } from "../services/settings.service.js";
 import { APK_PATH } from "../services/apk-storage.js";
 import { BUILD, appBaseUrl, compareSemver } from "../version.js";
 import { verifyAccessToken } from "../auth/jwt.js";
+import { publicLimiter } from "../auth/rateLimit.js";
+import type { Redis } from "../database/redis.js";
 
 // Public, unauthenticated: a client that is too old to authenticate still has
 // to be able to find out that it's too old, and what to do about it. This is
 // also the endpoint the client-version gate exempts, for the same reason.
-export function createVersionRouter(db: Database): Router {
+export function createVersionRouter(db: Database, redis: Redis): Router {
   const router = Router();
   const settings = new SettingsService(db);
+
+  // Unauthenticated and polled by every client on launch, so it needs a
+  // bound; publicLimiter's per-IP budget is far above a real client's rate
+  // and also covers /download, where each request can serve 300MB.
+  router.use(publicLimiter(redis));
 
   router.get("/", async (req: Request, res: Response) => {
     const policy = await settings.getClientVersionSettings();

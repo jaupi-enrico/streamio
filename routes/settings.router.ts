@@ -4,6 +4,8 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import multer from "multer";
 import { SettingsService } from "../services/settings.service.js";
 import { requireAuth, createRequireAdmin } from "../auth/middleware.js";
+import { adminLimiter } from "../auth/rateLimit.js";
+import type { Redis } from "../database/redis.js";
 import { APK_DIR, APK_PATH } from "../services/apk-storage.js";
 import { appBaseUrl } from "../version.js";
 import type { Database } from "../database/db.js";
@@ -13,6 +15,7 @@ import type { WebPlatformHandler } from "../PlatformHandler.js";
 
 export function createSettingsRouter(
   db: Database,
+  redis: Redis,
   idleShutdownService: IdleShutdownService,
   updateService: UpdateService,
   platformHandler: WebPlatformHandler,
@@ -23,7 +26,7 @@ export function createSettingsRouter(
   // All settings routes are server-wide config — admin only. Admin means an
   // ADMIN_EMAILS address whose *verification* has been completed; see
   // createRequireAdmin.
-  router.use(requireAuth, createRequireAdmin(db));
+  router.use(requireAuth, createRequireAdmin(db), adminLimiter(redis));
 
   // ── Hosting points ─────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { ALLOWED_REACTIONS, isAllowedReaction, ShareService } from "../services/share.service.js";
 import { requireAuth } from "../auth/middleware.js";
-import { shareLimiter } from "../auth/rateLimit.js";
+import { apiLimiter, shareLimiter } from "../auth/rateLimit.js";
 import type { Redis } from "../database/redis.js";
 import type { Database } from "../database/db.js";
 
@@ -15,7 +15,9 @@ export function createShareRouter(db: Database, redis: Redis): Router {
   const router = Router();
   const service = new ShareService(db, redis);
 
-  router.use(requireAuth);
+  // Broad per-account backstop for the whole router; `shareLimiter` below
+  // stays on the one route that sends something to another person.
+  router.use(requireAuth, apiLimiter(redis));
 
   // ── POST /api/social/shares ────────────────────────────────
   router.post("/shares", shareLimiter(redis), async (req: Request, res: Response) => {

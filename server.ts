@@ -20,6 +20,8 @@ import { createUpdateRouter } from "./routes/update.router.js";
 import { createLocalProviderRouter } from "./routes/local-provider.router.js";
 import { UpdateService } from "./services/update.service.js";
 import { createClientVersionGate } from "./auth/clientVersion.js";
+import { csrfGuard } from "./auth/csrf.js";
+import { castProxyLimiter, publicLimiter } from "./auth/rateLimit.js";
 import { optionalAuth } from "./auth/middleware.js";
 import { VERSION_STRING } from "./version.js";
 import { Database } from "./database/db.js";
@@ -85,6 +87,12 @@ export class WebServer {
 
     this.app.use(express.json());
     this.app.use(cookieParser());
+    // Registered immediately after the cookie parser, because the cookie is
+    // exactly what it protects: `refresh_token` is the one ambient credential
+    // on this server, and everything else authenticates by Bearer header.
+    // See auth/csrf.ts for why this checks Sec-Fetch-Site rather than
+    // comparing Origin to Host.
+    this.app.use(csrfGuard());
     this.app.use((req, res, next) => {
           res.set("Access-Control-Allow-Origin", "*");
           res.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
@@ -201,24 +209,33 @@ export class WebServer {
         },
       }),
     );
-    this.app.use("/",              createPublicRouter());
+    this.app.use("/",              createPublicRouter(this.redis));
     this.app.use("/health",        createHealthRouter());
-    this.app.use("/api/version",   createVersionRouter(this.db));
+    this.app.use("/api/version",   createVersionRouter(this.db, this.redis));
     this.app.use("/api/auth",      createAuthRouter(this.db, this.redis));
     this.app.use("/api/account",   createAccountRouter(this.db, this.redis, this.roomService, this.roomHub, this.platformHandler));
     this.app.use("/api/social",    createFollowRouter(this.db, this.redis));
     this.app.use("/api/social",    createShareRouter(this.db, this.redis));
-    this.app.use("/api/settings",  createSettingsRouter(this.db, this.idleShutdownService, this.updateService, this.platformHandler));
-    this.app.use("/api/admin/local-provider", createLocalProviderRouter(this.db));
+    this.app.use("/api/settings",  createSettingsRouter(this.db, this.redis, this.idleShutdownService, this.updateService, this.platformHandler));
+    this.app.use("/api/admin/local-provider", createLocalProviderRouter(this.db, this.redis));
     this.app.use("/api/sync",      createSyncRouter(this.db, this.redis));
     this.app.use("/internal/power", createPowerRouter(this.idleShutdownService));
     this.app.use("/internal/update", createUpdateRouter(this.updateService));
-    this.app.use("/api/rooms",     createRoomRouter(this.roomService, this.roomHub));
+    this.app.use("/api/rooms",     createRoomRouter(this.roomService, this.roomHub, this.redis));
     // optionalAuth, not requireAuth: browsing stays anonymous, but a signed-in
     // caller is recognised so the 18+ preference can be honoured. Without this
-    // the content routes could never tell who is asking.
-    this.app.use("/api/providers", optionalAuth, createProviderRouter(this.platformHandler, this.db, this.redis));
-    this.app.use("/api",           optionalAuth, createContentRouter(this.platformHandler, this.db, this.redis));
+    // the content routes could never tell who is asking. For the same reason
+    // the limiter here is publicLimiter and not apiLimiter — most callers have
+    // no account to key a budget on.
+    //
+    // /api/cast-proxy is carved out and given its own far larger budget: one
+    // viewer streaming one film is thousands of segment fetches through it,
+    // which would exhaust a browsing budget in minutes and surface as a fatal
+    // hls.js error rather than as throttling. See castProxyLimiter.
+    const isCastProxy = (req: express.Request) => req.path === "/cast-proxy";
+    this.app.use("/api/providers", optionalAuth, publicLimiter(this.redis), createProviderRouter(this.platformHandler, this.db, this.redis));
+    this.app.use("/api/cast-proxy", castProxyLimiter(this.redis));
+    this.app.use("/api",           optionalAuth, publicLimiter(this.redis, { skip: isCastProxy }), createContentRouter(this.platformHandler, this.db, this.redis));
   }
 
   // Rooms (watch parties) sync over a plain WebSocket at /ws/rooms/:code —

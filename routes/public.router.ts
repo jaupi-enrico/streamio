@@ -3,6 +3,8 @@ import { dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { Router } from "express";
 import path from "node:path";
+import { publicLimiter } from "../auth/rateLimit.js";
+import type { Redis } from "../database/redis.js";
 
 type PublicPage =
     | "home"
@@ -41,73 +43,88 @@ function resolvePublicDir() {
     return path.resolve(process.cwd(), "public");
 }
 
-export function createPublicRouter() {
+export function createPublicRouter(redis: Redis) {
     const router = Router();
     const publicDir = resolvePublicDir();
 
-    router.get("/", (_, res) => {
+    // These are static HTML documents, so the cost of serving one is small —
+    // but they are the only unauthenticated, uncached entry points on the
+    // server, and nothing else bounds how fast one address can ask for them.
+    // The budget is per IP and deliberately loose: a page load pulls one
+    // document here (its assets come from express.static), so a person
+    // clicking around never approaches it.
+    //
+    // Attached per route rather than with `router.use`, which would be a bug
+    // here: this router is mounted at "/" *above* the API mounts (server.ts),
+    // so router-level middleware runs for every request that merely passes
+    // through on its way to /api — including the thousands of segment fetches
+    // one film pulls through /api/cast-proxy, which would spend this budget
+    // and throttle playback.
+    const limit = publicLimiter(redis);
+
+    router.get("/", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.home));
     });
 
-    router.get("/home", (_, res) => {
+    router.get("/home", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.home));
     });
 
-    router.get("/catalog", (_, res) => {
+    router.get("/catalog", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.catalog));
     });
 
-    router.get("/search", (_, res) => {
+    router.get("/search", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.search));
     });
 
-    router.get("/providers", (_, res) => {
+    router.get("/providers", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.providers));
     });
 
-    router.get("/details", (_, res) => {
+    router.get("/details", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.details));
     });
 
-    router.get("/watch", (_, res) => {
+    router.get("/watch", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.watch));
     });
 
-    router.get("/rooms", (_, res) => {
+    router.get("/rooms", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.rooms));
     });
 
-    router.get("/account", (_, res) => {
+    router.get("/account", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.account));
     });
 
-    router.get("/admin/providers", (_, res) => {
+    router.get("/admin/providers", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.adminProviders));
     });
 
-    router.get("/admin/local-provider", (_, res) => {
+    router.get("/admin/local-provider", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.adminLocalProvider));
     });
 
-    router.get("/login", (_, res) => {
+    router.get("/login", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.login));
     });
 
     // Where a television sends its user: short enough to read off a screen and
     // type on a phone. The page itself requires a session (see scripts/tv.js).
-    router.get("/tv", (_, res) => {
+    router.get("/tv", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.tv));
     });
 
-    router.get("/auth/callback", (_, res) => {
+    router.get("/auth/callback", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.login)); 
     });
 
-    router.get("/verify-email", (_, res) => {
+    router.get("/verify-email", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.verifyEmail));
     });
 
-    router.get("/reset-password", (_, res) => {
+    router.get("/reset-password", limit, (_, res) => {
         res.sendFile(path.join(publicDir, pageFiles.resetPassword));
     });
 

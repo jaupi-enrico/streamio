@@ -3,6 +3,8 @@ import { Router, type Request, type Response } from "express";
 import { RoomService, type ContentType } from "../services/room.service.js";
 import type { RoomHub } from "../services/room-socket.service.js";
 import { requireAuth } from "../auth/middleware.js";
+import { apiLimiter } from "../auth/rateLimit.js";
+import type { Redis } from "../database/redis.js";
 
 const VALID_CONTENT_TYPES: ContentType[] = ["movie", "episode"];
 
@@ -11,9 +13,9 @@ function readCode(req: Request): string {
   return (Array.isArray(raw) ? raw[0] : raw).toUpperCase();
 }
 
-export function createRoomRouter(roomService: RoomService, roomHub: RoomHub): Router {
+export function createRoomRouter(roomService: RoomService, roomHub: RoomHub, redis: Redis): Router {
   const router = Router();
-  router.use(requireAuth);
+  router.use(requireAuth, apiLimiter(redis));
 
   // ── POST /api/rooms ─────────────────────────────────────────
   router.post("/", async (req: Request, res: Response) => {

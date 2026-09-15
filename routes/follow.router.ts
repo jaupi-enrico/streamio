@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { FollowService } from "../services/follow.service.js";
 import { requireAuth } from "../auth/middleware.js";
+import { apiLimiter } from "../auth/rateLimit.js";
 import type { Redis } from "../database/redis.js";
 import type { Database } from "../database/db.js";
 
@@ -14,7 +15,10 @@ export function createFollowRouter(db: Database, redis: Redis): Router {
   const router = Router();
   const service = new FollowService(db, redis);
 
-  router.use(requireAuth);
+  // Every route below is authenticated, so the limiter keys by account.
+  // It is a backstop against scripted traversal of the follow graph — a
+  // person clicking through profiles never comes near it.
+  router.use(requireAuth, apiLimiter(redis));
 
   // ── GET /api/social/users/search ──────────────────────────
   router.get("/users/search", async (req: Request, res: Response) => {
