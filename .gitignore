@@ -1,0 +1,10 @@
+dist
+node_modules
+.env
+
+# Local-only additions, never part of this repository. `dist` above already
+# covers anything they compile to, and the app boots identically without any
+# of them present.
+core/providers/custom/
+redirect/
+docker-compose.override.yml
