@@ -297,7 +297,16 @@ nav.solid {
     display: flex; gap: 10px;
     overflow-x: auto; scroll-snap-type: x mandatory;
     scroll-behavior: smooth;
-    padding-bottom: 6px;
+    /* A hovered card grows out of the rail's own box (`.card` scales, the wide
+       cards lift), and `overflow-x: auto` computes `overflow-y` to `auto` too —
+       so without a gutter the growth is clipped flat against the top and bottom
+       edges. The padding is that gutter, the negative margin keeps the cards
+       lined up with the row header despite it, and `scroll-padding` moves the
+       snap edge onto the gutter so the first card can't snap its own breathing
+       room out of view. */
+    padding: 12px;
+    margin: -12px -12px -6px;
+    scroll-padding: 12px;
     -ms-overflow-style: none; scrollbar-width: none;
 }
 .rail::-webkit-scrollbar { display: none; }

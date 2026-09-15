@@ -76,7 +76,16 @@ nav {
     overflow-x: auto;
     scroll-snap-type: x mandatory;
     scroll-behavior: smooth;
-    padding-bottom: 8px;
+    /* Same trap as `.rail` on the home page: a hovered card scales past the
+       carousel's own box, and `overflow-x: auto` computes `overflow-y` to
+       `auto` too, so without a gutter the growth is clipped flat top and
+       bottom. The padding is that gutter, the negative margin keeps the cards
+       aligned with the section header despite it, and `scroll-padding` moves
+       the snap edge onto the gutter so the first card can't snap its own
+       breathing room out of view. */
+    padding: 12px;
+    margin: -12px -12px -4px;
+    scroll-padding: 12px;
     -ms-overflow-style: none;
     scrollbar-width: none;
 }
