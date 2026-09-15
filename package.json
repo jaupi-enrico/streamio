@@ -1,6 +1,6 @@
 {
   "name": "streamio-v2",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Self-hosted streaming platform for your own media library.",
   "main": "index.js",
   "repository": {
