@@ -151,7 +151,7 @@ self-hosted web application.
 
 ## © Copyright
 
-Copyright © 2026 Streamio. All rights reserved.
+Copyright © 2026 Enrico Jaupi. All rights reserved.
 
 You may fork and modify this repository solely for the purpose of contributing changes back to
 this project through a Pull Request.

@@ -123,7 +123,7 @@ open an issue first so we can talk through the approach before you invest the ti
 
 ## License
 
-Copyright © 2026 Streamio.
+Copyright © 2026 Enrico Jaupi.
 
 Licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) —
 Attribution-NonCommercial-ShareAlike. You may share and adapt this project for non-commercial

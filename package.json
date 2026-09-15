@@ -27,7 +27,7 @@
     "docker",
     "typescript"
   ],
-  "author": "",
+  "author": "Enrico Jaupi",
   "license": "CC-BY-NC-SA-4.0",
   "type": "module",
   "devDependencies": {
