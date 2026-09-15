@@ -2,8 +2,8 @@
   "name": "power-controller",
   "version": "1.0.0",
   "description": "Host-side watcher that polls the Streamio app for shutdown requests and powers off the machine it runs on.",
-  "license": "ISC",
-  "author": "",
+  "license": "CC-BY-NC-SA-4.0",
+  "author": "Enrico Jaupi",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

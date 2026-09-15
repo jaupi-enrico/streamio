@@ -2,8 +2,8 @@
   "name": "updater",
   "version": "1.0.0",
   "description": "Host-side watcher that checks out and rebuilds new Streamio releases when the app flags one.",
-  "license": "ISC",
-  "author": "",
+  "license": "CC-BY-NC-SA-4.0",
+  "author": "Enrico Jaupi",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

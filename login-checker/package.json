@@ -2,8 +2,8 @@
   "name": "login-checker",
   "version": "1.0.0",
   "description": "Localhost-only service that reports whether a user is logged into this machine. Meant to run only for the duration of an OS session (start on login, stop on logout) so its mere reachability signals someone is physically at the machine.",
-  "license": "ISC",
-  "author": "",
+  "license": "CC-BY-NC-SA-4.0",
+  "author": "Enrico Jaupi",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
