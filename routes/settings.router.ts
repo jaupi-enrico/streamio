@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import crypto from "node:crypto";
 import { Router, type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
@@ -168,8 +169,14 @@ export function createSettingsRouter(
         res.status(400).json({ error: "No file uploaded, or it wasn't a .apk file." });
         return;
       }
+      // multer wrote the upload under a name generated right above, but it
+      // comes back through `req.file` — i.e. through the request. Rebuilding
+      // the path from APK_DIR and a bare basename is what makes the rename and
+      // the cleanup below provably confined to the upload directory, whatever
+      // the request managed to put in there.
+      const tmpPath = path.join(APK_DIR, path.basename(req.file.filename));
       try {
-        await fs.promises.rename(req.file.path, APK_PATH);
+        await fs.promises.rename(tmpPath, APK_PATH);
         const current = await service.getClientVersionSettings();
         const updated = await service.setClientVersionSettings({
           downloadUrl: `${appBaseUrl()}/api/version/download`,
@@ -178,7 +185,7 @@ export function createSettingsRouter(
         });
         res.json(updated);
       } catch (renameErr) {
-        await fs.promises.unlink(req.file.path).catch(() => {});
+        await fs.promises.unlink(tmpPath).catch(() => {});
         next(renameErr);
       }
     });

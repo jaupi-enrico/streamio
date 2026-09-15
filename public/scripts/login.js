@@ -1,5 +1,29 @@
 import { saveAccessToken } from '/scripts/auth.js';
 
+// `?redirect=` is read straight out of the address bar and handed to
+// `window.location`, which makes it a navigation sink in two ways: a
+// `javascript:` target is script execution on *this* origin (and this page
+// holds a freshly minted session), and `//evil.example` — or `/\evil.example`,
+// which browsers normalise to the same thing — walks the user out of the app
+// at the exact moment they trust it most. So the value is resolved against our
+// own origin and only its path is ever used; anything that lands elsewhere
+// falls back to the home page. Mirrors `isAllowedRedirect` in
+// routes/auth.router.ts, which guards the same param on the server side.
+function safeRedirect(raw) {
+    if (typeof raw !== 'string' || raw === '') return '/';
+    let url;
+    try {
+        // Resolving against our origin is what makes the comparison meaningful:
+        // a plain path keeps it, an absolute URL keeps its own, `javascript:`
+        // and friends resolve to the opaque origin "null".
+        url = new URL(raw, window.location.origin);
+    } catch {
+        return '/';
+    }
+    if (url.origin !== window.location.origin) return '/';
+    return `${url.pathname}${url.search}${url.hash}`;
+}
+
 // /api/version/download requires a logged-in user but can't read the
 // Authorization header on a plain browser navigation, so it accepts the
 // access token as a `?token=` query param instead (same fallback the room
@@ -31,7 +55,7 @@ const token  = params.get('token');
 
 function leave(accessToken) {
     saveAccessToken(accessToken);
-    const redirect = params.get('redirect') || '/';
+    const redirect = safeRedirect(params.get('redirect'));
     window.location.replace(withDownloadToken(redirect, accessToken));
 }
 
@@ -71,8 +95,11 @@ if (token) leave(token);
 // OAuth round trip always lands on '/' regardless of what page sent them
 // to /login.
 (function() {
-const redirect = new URLSearchParams(window.location.search).get('redirect');
-if (!redirect) return;
+// Stitched onto the OAuth links, which the server then reflects back into a
+// Location header after the round trip — so it goes through the same filter
+// as the two navigations above rather than being passed on as typed.
+const redirect = safeRedirect(new URLSearchParams(window.location.search).get('redirect'));
+if (redirect === '/') return;
 document.querySelectorAll('#oauthGroup .oauth-btn').forEach(a => {
     const url = new URL(a.href, window.location.origin);
     url.searchParams.set('redirect', redirect);
@@ -165,7 +192,7 @@ try {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Login failed.');
     saveAccessToken(data.access_token);
-    const redirect = new URLSearchParams(window.location.search).get('redirect') || '/';
+    const redirect = safeRedirect(new URLSearchParams(window.location.search).get('redirect'));
     window.location.href = withDownloadToken(redirect, data.access_token);
 } catch (err) {
     showError('loginError', err.message);

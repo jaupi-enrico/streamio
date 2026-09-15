@@ -140,8 +140,12 @@ export class IntroDbService {
         }
       }
 
+      // `key` is built from caller-supplied ids, and console's first argument
+      // is a format string — a `%s` in there would swallow the error being
+      // logged. Passed as an argument instead, it is only ever data.
       console.error(
-        `[intro-db] segment lookup failed for ${key}:`,
+        "[intro-db] segment lookup failed for",
+        key,
         err instanceof Error ? err.message : err
       );
       return null; // never cached — never blocks playback, just retries next time

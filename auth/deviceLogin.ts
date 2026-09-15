@@ -64,18 +64,40 @@ export function deviceKey(userCode: string): string {
   return `auth:device:${userCode}`;
 }
 
+const USER_CODE_LENGTH = USER_CODE_GROUPS * USER_CODE_GROUP_SIZE;
+
+/**
+ * Largest multiple of the alphabet size that still fits in a byte — 240 for
+ * 24 letters. Bytes at or above it are discarded rather than folded in.
+ *
+ * `randomBytes()[i] % 24` is not uniform: 256 isn't a multiple of 24, so the
+ * leftover values 240-255 land on the first sixteen letters a second time and
+ * make them ~50% likelier than the last eight. That costs real entropy — the
+ * 24^8 the comment below claims becomes noticeably less — and the whole point
+ * of a short code that is only ever guarded by "it expires in ten minutes" is
+ * that guessing it stays expensive.
+ */
+const USER_CODE_BYTE_CEILING = 256 - (256 % USER_CODE_ALPHABET.length);
+
 /**
  * `K7RQ-4M3P`. Roughly 24^8 ≈ 1.1e11 possibilities, narrowed by however many
  * codes are live at once — which is why claiming one still requires a signed-in
  * session and redeeming one still requires the device code.
  */
 export function generateUserCode(): string {
-  const bytes = randomBytes(USER_CODE_GROUPS * USER_CODE_GROUP_SIZE);
   let out = "";
+  let taken = 0;
 
-  for (let i = 0; i < bytes.length; i++) {
-    if (i > 0 && i % USER_CODE_GROUP_SIZE === 0) out += "-";
-    out += USER_CODE_ALPHABET[bytes[i]! % USER_CODE_ALPHABET.length];
+  // Rejection sampling. About 6% of bytes are thrown away, so drawing a full
+  // code's worth per round means a second round is the rare case rather than
+  // the norm, and the loop always terminates on the next draw.
+  while (taken < USER_CODE_LENGTH) {
+    for (const byte of randomBytes(USER_CODE_LENGTH)) {
+      if (byte >= USER_CODE_BYTE_CEILING) continue;
+      if (taken > 0 && taken % USER_CODE_GROUP_SIZE === 0) out += "-";
+      out += USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length];
+      if (++taken === USER_CODE_LENGTH) break;
+    }
   }
 
   return out;

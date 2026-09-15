@@ -46,8 +46,17 @@ const pendingStates = new Map<
 // `?redirect=` param apiFetch's redirectToLogin sets). Only ever a same-site
 // path — never an absolute/protocol-relative URL — since this value is
 // reflected straight into a redirect Location.
+//
+// The second character matters as much as the first: browsers normalise a
+// backslash to a forward slash while parsing a URL, so `/\evil.example` in a
+// Location header is `//evil.example`, i.e. an open redirect that a
+// `startsWith("//")` check alone waves through. A control character is
+// rejected for the same reason — it has no business in a path and is the
+// classic way to smuggle something past a naive prefix test.
 function isAllowedRedirect(path: string): boolean {
-  return path.startsWith("/") && !path.startsWith("//");
+  if (!path.startsWith("/")) return false;
+  if (path[1] === "/" || path[1] === "\\") return false;
+  return !/[\x00-\x1f\x7f]/.test(path);
 }
 
 // Custom scheme the Flutter app registers for its OAuth callback. Native
