@@ -2830,9 +2830,18 @@ function loadCastMedia(session) {
   const customData = buildCastCustomData();
   const proxied = castProxyUrl(castMedia.url);
   const isProgressive = /^video\//i.test(castMedia.type || "");
+  // Lowercase, always: CAF looks the content type up in its own table to pick
+  // a playback pipeline and the lookup is case-sensitive, so
+  // "application/x-mpegURL" is handed to the plain media element instead of
+  // the HLS player — the load dies ~13s later as error 100 (MEDIA_UNKNOWN) and
+  // poisons that receiver page for every load after it. This sender has always
+  // sent it lowercase, which is why casting worked here while the app's
+  // capital spelling failed on the same stream and the same device.
   const mediaInfo = new chrome.cast.media.MediaInfo(
     proxied,
-    isProgressive ? castMedia.type : "application/x-mpegurl",
+    isProgressive
+      ? String(castMedia.type || "video/mp4").toLowerCase()
+      : "application/x-mpegurl",
   );
   mediaInfo.streamType = chrome.cast.media.StreamType.BUFFERED;
   mediaInfo.metadata = buildCastMetadata(customData);

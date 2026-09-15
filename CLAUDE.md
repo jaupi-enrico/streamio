@@ -512,6 +512,12 @@ described in `app/CLAUDE.md`.
   `docs/protocol.md`. **Every field must stay optional** — the receiver degrades field by field,
   and the no-customData path stays live for older app builds. Adding fields is safe anytime;
   removing/renaming needs coordination.
+  The `MediaInformation` around it has one detail that is *not* optional: **`contentType` is
+  `application/x-mpegurl`, lowercase** (`video/mp4` for a progressive source). CAF's
+  contentType → pipeline lookup is case-sensitive, so `application/x-mpegURL` is handed to the
+  plain media element, fails ~13s into the load as error 100, and poisons that receiver page for
+  every later load — the recovery ladder then burns all three attempts on a stream that is fine.
+  The receiver canonicalizes it too, but a receiver deployment can be older than a sender.
 - **The receiver deploys on its own schedule** — a static page shared by every install, often
   newer than the backend it talks to, sometimes served stale from a device cache. The endpoints
   it calls itself (`/api/shows/:id`, `/api/seasons/:id/episodes`, `/api/episodes/:id/servers`,
