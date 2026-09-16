@@ -593,10 +593,19 @@ const MAX_SERVER_NODES = 2_000;
 interface WalkState {
   found: string[];
   nodes: number;
+  /** Set when the node budget ran out, i.e. the walk did *not* see everything. */
+  truncated: boolean;
 }
 
 function collectUrls(value: unknown, state: WalkState): string[] {
-  if (state.nodes++ > MAX_SERVER_NODES) return state.found;
+  if (state.nodes++ > MAX_SERVER_NODES) {
+    // Fail closed. Giving up quietly would mean an object padded with enough
+    // junk to exhaust the budget — comfortably inside express's 100kb body
+    // limit — gets its real URL skipped and validated by nobody, which is the
+    // hole this whole function exists to close.
+    state.truncated = true;
+    return state.found;
+  }
   // Collects one past the cap on purpose: that extra entry is what tells
   // `assertObjectFetchable` the object went over rather than landing exactly
   // on the limit.
@@ -635,7 +644,11 @@ function collectUrls(value: unknown, state: WalkState): string[] {
  * itself — which is what covers the redirect hops neither layer can see.
  */
 export async function assertObjectFetchable(value: unknown): Promise<void> {
-  const urls = collectUrls(value, { found: [], nodes: 0 });
+  const state: WalkState = { found: [], nodes: 0, truncated: false };
+  const urls = collectUrls(value, state);
+  if (state.truncated) {
+    throw new BlockedUrlError("Server entry is too large to validate");
+  }
   if (urls.length > MAX_SERVER_URLS) {
     throw new BlockedUrlError("Server entry carries too many URLs");
   }

@@ -19,6 +19,7 @@ Create a `.env` file (`cp .env.example .env`) and fill in the values below. See
 | `APP_NAME` | Application name |
 | `RESEND_API_KEY` | API key for email sending |
 | `ALLOW_PRIVATE_UPSTREAM` | **Optional, `1` to enable.** Lets `/api/cast-proxy` and video resolution fetch private/loopback addresses. Off by default: those endpoints take an absolute URL from the caller, so without the block they proxy anything the container can reach that the internet cannot (cloud metadata on `169.254.169.254`, the `db`/`redis` containers, localhost). Turn it on only to play a source on your own LAN, and only on an install that isn't publicly reachable. Only the *address* check is lifted: the http(s)-only rule, the single-resolution rule (which is what stops DNS rebinding) and the redirect chase stay on |
+| `TRUST_PROXY` | **Optional, set only behind a reverse proxy.** How far `X-Forwarded-For` is believed when the rate limiters decide who a request came from. Unset ignores the header and uses the socket peer — right for a directly-exposed install, since otherwise a caller draws a fresh per-IP budget for every request just by varying the header. Behind a proxy the socket peer is the proxy and every client shares one bucket, so set the number of proxies in front (usually `1`), a comma-separated list of trusted addresses/CIDRs or Express presets (`loopback`, `uniquelocal`), or `true` to trust the whole chain (only when nothing but your proxy can reach the port) |
 
 ## Authentication
 

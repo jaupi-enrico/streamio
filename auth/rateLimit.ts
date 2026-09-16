@@ -94,12 +94,42 @@ export function oauthLimiter(redis: RedisClient) {
   });
 }
 
+/**
+ * How `TRUST_PROXY` becomes Express's `trust proxy` setting.
+ *
+ * Unset is `false`: Express then ignores `X-Forwarded-For` and `req.ip` is the
+ * socket peer. That is the only safe default, because every per-IP budget here
+ * is keyed on `req.ip` — trusting the header unconditionally lets a caller mint
+ * a fresh bucket per request by varying it, which is exactly the guessing
+ * throughput these limiters exist to bound.
+ *
+ * Behind a reverse proxy the socket peer is the proxy, so every client shares
+ * one bucket until this is set. Accepted spellings mirror Express's own:
+ * a hop count ("1" — the usual answer for one proxy in front), a comma list of
+ * trusted addresses/CIDRs or Express's presets ("loopback", "uniquelocal", ...),
+ * or "true" to trust the whole chain, which is only ever right when nothing but
+ * your proxy can reach the port.
+ */
+export function trustProxySetting(): boolean | number | string {
+  const raw = process.env.TRUST_PROXY?.trim();
+  if (!raw) return false;
+  if (raw === "true")  return true;
+  if (raw === "false") return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return raw;
+}
+
+/**
+ * The address a per-IP budget is charged to.
+ *
+ * `req.ip` rather than a hand-parsed `X-Forwarded-For`: Express reads that
+ * header only as far as `trust proxy` allows (see `trustProxySetting`), so an
+ * install with no proxy configured can't be handed an arbitrary key by a
+ * client that simply sent the header. Undefined only if the socket is already
+ * gone, in which case one shared bucket is the conservative answer.
+ */
 function ipKey(req: Request): string {
-  return (
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
-    req.socket.remoteAddress ??
-    "unknown"
-  );
+  return req.ip ?? req.socket.remoteAddress ?? "unknown";
 }
 
 /**

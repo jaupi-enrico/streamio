@@ -415,8 +415,9 @@ export class AccountService {
       family_id: string;
       expires_at: Date;
       revoked: boolean;
+      rotated_at: Date | null;
     }>(
-      `SELECT id, user_id, family_id, expires_at, revoked
+      `SELECT id, user_id, family_id, expires_at, revoked, rotated_at
        FROM refresh_tokens WHERE token_hash = $1`,
       [hash]
     );
@@ -425,8 +426,10 @@ export class AccountService {
     const live   = record && !record.revoked && new Date() <= record.expires_at;
 
     if (live) {
+      // `rotated_at` is what separates this from a logout further down — see
+      // migration 007 and the reuse branch below.
       await this.db.query(
-        `UPDATE refresh_tokens SET revoked = TRUE WHERE id = $1`,
+        `UPDATE refresh_tokens SET revoked = TRUE, rotated_at = NOW() WHERE id = $1`,
         [record.id]
       );
       await this.redis.delete(`rt:${hash}`);
@@ -458,12 +461,27 @@ export class AccountService {
     //
     // A chain with no live token left is one somebody deliberately ended, and
     // a retry is not a reason to resurrect it.
-    const grace = await this.redis.get<{ userId: string; familyId: string }>(
-      `rtg:${hash}`
-    );
-    if (grace?.userId) {
-      if (await this.familyHasLiveToken(grace.familyId)) {
-        return this.issueRotation(grace.userId, grace.familyId);
+    //
+    // Builds before families existed wrote this entry as a bare user-id
+    // string, and one written seconds before a deploy is read seconds after
+    // it. Both spellings are accepted: read as an object only, a legacy entry
+    // would leave `userId` undefined, drop through to the reuse branch below
+    // and answer an honest retry by revoking the client's whole chain.
+    const grace = await this.redis.get<
+      { userId: string; familyId: string } | string
+    >(`rtg:${hash}`);
+    const graceUserId   = typeof grace === "string" ? grace : grace?.userId;
+    // A legacy entry names no chain, so the chain is read off the token's own
+    // row, which is where the object form got it in the first place. No row at
+    // all means the account was deleted — the one case that deletes tokens
+    // rather than revoking them — and that must not be resurrected.
+    const graceFamilyId = typeof grace === "string"
+      ? record?.family_id
+      : grace?.familyId;
+
+    if (graceUserId && graceFamilyId) {
+      if (await this.familyHasLiveToken(graceFamilyId)) {
+        return this.issueRotation(graceUserId, graceFamilyId);
       }
 
       throw new Error("INVALID_REFRESH_TOKEN");
@@ -480,7 +498,16 @@ export class AccountService {
     // be holding, and the user's other devices — each its own family — keep
     // working. Revoking the whole account instead would let one laptop that
     // lost a response sign the user out of their phone and TV.
-    if (record && record.revoked && new Date() <= record.expires_at) {
+    //
+    // `rotated_at` is the whole condition here, not `revoked`: a logout, a
+    // password reset (`revokeAllRefreshTokens`) and the family revocation
+    // below all set `revoked` too, and reading that as evidence made every
+    // other device's next refresh log a reuse warning and re-kill a chain that
+    // was already deliberately ended. Only a token retired *because this
+    // server minted its successor* can be presented by two parties. Rows
+    // revoked before migration 007 carry no `rotated_at` and are treated as
+    // ordinary dead tokens.
+    if (record?.rotated_at && record.revoked && new Date() <= record.expires_at) {
       await this.revokeRefreshTokenFamily(record.family_id);
       console.warn(
         `[account] refresh token reuse detected for user ${record.user_id}; revoked token family ${record.family_id}`

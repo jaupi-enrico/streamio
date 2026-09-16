@@ -27,6 +27,7 @@ import axios from "axios";
 import {
   BlockedUrlError,
   assertFetchableUrl,
+  assertObjectFetchable,
   clearHostCache,
   guardedAgents,
   isPrivateAddress,
@@ -211,6 +212,38 @@ await check("does not mistake ids and labels for URLs", () => {
 
 await check("blocks the slash-less spelling end to end", async () => {
   await assertBlocked("https:169.254.169.254/latest/", "the slash-less metadata URL was allowed");
+});
+
+console.log("\nclient-supplied server objects");
+
+await check("validates a URL nested deeper than the old depth cap", async () => {
+  let threw = false;
+  try {
+    await assertObjectFetchable({
+      id: "1",
+      src: "https://example.com/x.m3u8",
+      opts: { headers: { referer: { fallback: "http://169.254.169.254/latest/" } } },
+    });
+  } catch (err) {
+    threw = err instanceof BlockedUrlError;
+  }
+  assert(threw, "a deeply nested metadata URL was allowed");
+});
+
+await check("refuses an object too large to walk instead of skipping it", async () => {
+  // The walk gives up after a node budget. Giving up *quietly* is the silent
+  // failure: pad the object with enough junk — still far inside express's
+  // 100kb body limit — and the real `src` is never looked at by anyone.
+  const padding = {};
+  for (let i = 0; i < 5000; i++) padding[`k${i}`] = "x";
+
+  let threw = false;
+  try {
+    await assertObjectFetchable({ padding, src: "http://127.0.0.1:6379/" });
+  } catch (err) {
+    threw = err instanceof BlockedUrlError;
+  }
+  assert(threw, "a padded object skipped validation of its own src");
 });
 
 console.log("\nthe socket is pinned to what was checked");

@@ -21,7 +21,7 @@ import { createLocalProviderRouter } from "./routes/local-provider.router.js";
 import { UpdateService } from "./services/update.service.js";
 import { createClientVersionGate } from "./auth/clientVersion.js";
 import { csrfGuard } from "./auth/csrf.js";
-import { castProxyLimiter, publicLimiter } from "./auth/rateLimit.js";
+import { castProxyLimiter, publicLimiter, trustProxySetting } from "./auth/rateLimit.js";
 import { optionalAuth } from "./auth/middleware.js";
 import { VERSION_STRING } from "./version.js";
 import { Database } from "./database/db.js";
@@ -64,6 +64,15 @@ export class WebServer {
 
   constructor() {
     this.app = express();
+    // Every per-IP budget in auth/rateLimit.ts reads req.ip, and req.ip is
+    // only as trustworthy as this setting: with it off (the default) Express
+    // ignores X-Forwarded-For entirely and reports the socket peer, so a
+    // header an attacker typed can't hand them a fresh rate-limit bucket per
+    // request. Behind a reverse proxy the socket peer is the proxy, which
+    // would put every client in one bucket instead — so an install with a
+    // proxy in front sets TRUST_PROXY (see .env.example) and Express derives
+    // the client address from the forwarded chain.
+    this.app.set("trust proxy", trustProxySetting());
     this.db = new Database();
     this.redis = new Redis();
     this.redis.connect().catch((err) => {

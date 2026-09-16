@@ -1,0 +1,23 @@
+-- ============================================================
+-- 007_refresh_token_rotation.sql
+--
+-- Tells apart the two reasons a refresh token is revoked.
+--
+-- 006 made a revoked-but-unexpired token presented past its grace window mean
+-- "this chain leaked", and answer by revoking the whole family. But `revoked`
+-- alone cannot carry that meaning: it is also set by an ordinary logout, by
+-- revokeAllRefreshTokens (password reset, OAuth account claim), and by the
+-- family revocation itself. So a user who signed out on one device and came
+-- back to a still-open tab, or who reset their password, tripped reuse
+-- detection — logging a "refresh token reuse detected" warning about an event
+-- that is not a compromise, and re-revoking a chain that was already dead.
+--
+-- Reuse detection is only meaningful for a token this server retired *because
+-- it minted a successor*, so that is recorded explicitly. Rows revoked before
+-- this migration keep NULL: their reason is no longer knowable, and treating
+-- an unknown as "not a rotation" costs at most one missed detection on a
+-- token that expires within 30 days anyway, where the opposite default would
+-- keep producing the false alarms this fixes.
+-- ============================================================
+
+ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS rotated_at TIMESTAMPTZ;

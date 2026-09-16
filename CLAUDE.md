@@ -490,7 +490,10 @@ described in `app/CLAUDE.md`.
   revocation below. A token that merely *expired* is rejected on its own and revokes nothing. But a token this server **rotated away and
   is handed again past the grace window, while still unexpired**, is treated as a leak: every
   token in its `family_id` chain is revoked (migration `006`), which kills the successor an
-  attacker may already hold. Families are per-login, so the user's other devices stay signed in —
+  attacker may already hold. **"Rotated away" is `rotated_at`, not `revoked`** (migration `007`):
+  a logout, a password reset and the family revocation itself all set `revoked` too, and reading
+  that as evidence made every other device's next refresh log a reuse warning and re-kill an
+  already-dead chain. Families are per-login, so the user's other devices stay signed in —
   revoking the whole account would let one client that lost a response sign them out everywhere.
   Both clients: only 401/403 *from `/api/auth/refresh` itself* clears stored tokens; 429/5xx/
   unfollowed redirect/offline are retryable and leave the session intact.
