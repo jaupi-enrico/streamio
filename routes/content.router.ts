@@ -6,8 +6,7 @@ import { WebPlatformHandler } from "../PlatformHandler.js";
 import { UnknownProviderError } from "../core/core.js";
 import {
     BlockedUrlError,
-    assertFetchableUrl,
-    looksLikeUrl,
+    assertObjectFetchable,
     parseHttpUrl,
     safeFetch,
 } from "../core/utils/ssrf.js";
@@ -108,73 +107,6 @@ function readServerFromBody(body: unknown) {
     return server && typeof server === "object" ? server : null;
 }
 
-/** No legitimate server entry carries more than a couple of URLs. */
-const MAX_SERVER_URLS = 10;
-
-/**
- * How many values the walk will look at before giving up.
- *
- * There is deliberately no *depth* limit. A cap of three levels was enough for
- * today's `VideoServer` (a flat `{id, name, src}`), but the whole point of
- * checking here rather than in each provider is that a source added later
- * inherits the check without knowing about it — and a nested `headers` or
- * `options` bag is exactly the shape such a source would arrive in. A URL that
- * sits one level too deep to be seen is a hole that opens silently.
- *
- * A node budget bounds the walk just as well and doesn't care about shape.
- * Express's own body-size limit already bounds what can get this far; this is
- * belt-and-braces against a pathological object.
- */
-const MAX_SERVER_NODES = 2_000;
-
-interface WalkState {
-    found: string[];
-    nodes: number;
-}
-
-function collectUrls(value: unknown, state: WalkState): string[] {
-    if (state.nodes++ > MAX_SERVER_NODES) return state.found;
-    if (state.found.length > MAX_SERVER_URLS) return state.found;
-
-    if (typeof value === "string") {
-        const text = value.trim();
-        if (looksLikeUrl(text)) {
-            state.found.push(text.startsWith("//") ? `https:${text}` : text);
-        }
-        return state.found;
-    }
-    if (Array.isArray(value)) {
-        for (const item of value) collectUrls(item, state);
-        return state.found;
-    }
-    if (value && typeof value === "object") {
-        for (const item of Object.values(value)) collectUrls(item, state);
-    }
-    return state.found;
-}
-
-/**
- * The `server` object POSTed to `/episodes/:id/video` is whatever the client
- * says it is, and every provider's `getVideo` fetches the URL inside it — so
- * without this the endpoint resolves *any* address the container can reach and
- * reports back what it found. Checked here, at the one route that accepts the
- * object, rather than in each provider: a new source would otherwise inherit
- * the hole by simply not knowing about it.
- *
- * It is the outermost of three layers, and the only one that can answer with a
- * clean 400 before anything is attempted. `Core.resolveVideo` repeats it for
- * callers that bypass this router (the provider tests do), and underneath both,
- * the axios clients and `safeFetch` connect only to addresses the guard
- * resolved itself — which is what covers the redirect hops nobody here can see.
- */
-async function assertServerFetchable(server: object): Promise<void> {
-    const urls = collectUrls(server, { found: [], nodes: 0 });
-    if (urls.length > MAX_SERVER_URLS) {
-        throw new BlockedUrlError("Server entry carries too many URLs");
-    }
-    await Promise.all(urls.map((url) => assertFetchableUrl(url)));
-}
-
 function readIntroDbParams(query: unknown): IntroLookupParams | null {
     if (!query || typeof query !== "object") return null;
     const q = query as Record<string, unknown>;
@@ -243,6 +175,35 @@ export function createContentRouter(
             allowed,
             denylist: async () => new Set<string>(),
         };
+    }
+
+    /**
+     * The 18+ gate for a playable id — an episode or a movie on its way to
+     * being watched.
+     *
+     * The listing routes can check the flag on the item they already hold;
+     * these two only ever receive an id one level below the title, so the
+     * check has to walk back up to it (`showIdForPlayableId`, a parse rather
+     * than a lookup) and read the flag off the show — cached, so this costs a
+     * Redis hit on the common path.
+     *
+     * Filtering `/home` and `/search` only ever hid gated titles from
+     * discovery; resolution is where one actually becomes viewable, and it
+     * asked nothing. An id obtained while the preference was on, shared out of
+     * band, or simply kept from an earlier session played for anyone.
+     *
+     * A provider that can't map the id leaves the gate open, exactly as before.
+     */
+    async function playableIsGated(
+        provider: string,
+        playableId: string,
+        denylist: () => Promise<Set<string>>
+    ): Promise<boolean> {
+        const showId = platformHandler.showIdForPlayableId(provider, playableId);
+        if (!showId) return false;
+
+        const show = await platformHandler.getShowDetails(provider, showId);
+        return isAdultItem(show, await denylist());
     }
 
     router.get("/home", async (req, res, next) => {
@@ -370,9 +331,14 @@ export function createContentRouter(
 
     router.get("/episodes/:episodeId/servers", async (req, res, next) => {
         try {
-            const { provider } = await gate(req);
+            const { provider, allowed, denylist } = await gate(req);
 
             const { episodeId } = req.params;
+
+            if (!allowed && (await playableIsGated(provider, episodeId, denylist))) {
+                return res.status(403).json(ADULT_DISABLED);
+            }
+
             const contentType = readContentType(req.query.contentType);
             const data = await platformHandler.getServers(provider, episodeId, contentType);
 
@@ -412,10 +378,45 @@ export function createContentRouter(
                 });
             }
 
-            const { provider } = await gate(req);
+            const { provider, allowed, denylist } = await gate(req);
+            const { episodeId } = req.params;
+            const contentType = readContentType(req.query.contentType);
+
+            if (!allowed && (await playableIsGated(provider, episodeId, denylist))) {
+                return res.status(403).json(ADULT_DISABLED);
+            }
+
+            // The posted `server` has to be one this episode actually offers.
+            //
+            // Nothing downstream reads `:episodeId` — `resolveVideo` is handed
+            // the body and nothing else — so without this the id in the path
+            // and the thing that gets resolved are unrelated, and every check
+            // made against the path id guards a value the request never uses.
+            // The gate above is the one that matters: it would otherwise clear
+            // a harmless episode while the body named a file from a title it
+            // had just refused.
+            //
+            // Matching on `src` rather than the whole object: that is the field
+            // providers resolve from, and a client is free to relabel the rest.
+            // Both clients and the Cast receiver POST an entry taken verbatim
+            // from `GET /episodes/:id/servers` for this same id, so this asks
+            // nothing new of them.
+            const listed = await platformHandler.getServers(
+                provider,
+                episodeId,
+                contentType
+            );
+            const offered: { src?: unknown }[] = Array.isArray(listed) ? listed : [];
+            const src = typeof (server as { src?: unknown }).src === "string"
+                ? ((server as { src: string }).src).trim()
+                : "";
+
+            if (!src || !offered.some((entry) => entry?.src === src)) {
+                return res.status(400).json({ error: "Unknown server for this episode" });
+            }
 
             try {
-                await assertServerFetchable(server);
+                await assertObjectFetchable(server);
             } catch (err) {
                 if (err instanceof BlockedUrlError) {
                     // Deliberately vague: the reason names what the host

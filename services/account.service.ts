@@ -179,7 +179,13 @@ export class AccountService {
       `INSERT INTO users (email, password_hash, display_name, verification_token, verification_token_exp)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, email, display_name, avatar_url, email_verified, created_at`,
-      [email, passwordHash, displayName ?? null, verificationToken, AccountService.verificationExpiry()]
+      [
+        email,
+        passwordHash,
+        displayName ?? null,
+        AccountService.hashToken(verificationToken),
+        AccountService.verificationExpiry(),
+      ]
     );
 
     // Mail comes after the INSERT and is best-effort on purpose: a mail
@@ -357,15 +363,21 @@ export class AccountService {
 
   // ── Refresh tokens ────────────────────────────────────────
 
-  async createRefreshToken(userId: string): Promise<string> {
+  /**
+   * Mints a refresh token. `familyId` continues an existing chain — every
+   * token rotated out of one login shares it, which is what lets
+   * `rotateRefreshToken` answer a replayed token by killing that chain alone.
+   * Omitted (a fresh sign-in), the database default starts a new one.
+   */
+  async createRefreshToken(userId: string, familyId?: string): Promise<string> {
     const raw   = generateRefreshToken();
     const hash  = hashRefreshToken(raw);
     const exp   = refreshTokenExpiresAt();
 
     await this.db.query(
-      `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-       VALUES ($1, $2, $3)`,
-      [userId, hash, exp]
+      `INSERT INTO refresh_tokens (user_id, token_hash, expires_at, family_id)
+       VALUES ($1, $2, $3, COALESCE($4::uuid, gen_random_uuid()))`,
+      [userId, hash, exp, familyId ?? null]
     );
 
     // Mirror in Redis for fast lookup
@@ -400,10 +412,11 @@ export class AccountService {
     const result = await this.db.query<{
       id: string;
       user_id: string;
+      family_id: string;
       expires_at: Date;
       revoked: boolean;
     }>(
-      `SELECT id, user_id, expires_at, revoked
+      `SELECT id, user_id, family_id, expires_at, revoked
        FROM refresh_tokens WHERE token_hash = $1`,
       [hash]
     );
@@ -421,34 +434,110 @@ export class AccountService {
       // by a logout — see ROTATION_GRACE_SECONDS.
       await this.redis.set(
         `rtg:${hash}`,
-        record.user_id,
+        { userId: record.user_id, familyId: record.family_id },
         AccountService.ROTATION_GRACE_SECONDS
       );
 
-      return this.issueRotation(record.user_id);
+      return this.issueRotation(record.user_id, record.family_id);
     }
 
     // Not live — but if we rotated it ourselves moments ago, the client is
-    // simply retrying a call whose answer it never got. Give it a session.
-    const graceUserId = await this.redis.get<string>(`rtg:${hash}`);
-    if (graceUserId) {
-      return this.issueRotation(graceUserId);
+    // simply retrying a call whose answer it never got. Give it a session,
+    // continuing the same chain rather than starting a second one.
+    //
+    // Only while the chain is still alive, though. A grace entry outlives the
+    // rotation that wrote it by a minute, and nothing clears it when the chain
+    // is torn down, so honouring one unconditionally undoes every teardown
+    // there is: the reuse detection below, a logout, a password reset. The
+    // attack that buys is precise — hold a stolen token, rotate it every 30
+    // seconds so a predecessor is always inside its grace window, and the
+    // moment reuse detection fires (signing the *victim* out) replay that
+    // predecessor to be minted a fresh, unrevoked token in the chain that was
+    // just killed. The response to a detected compromise would evict the owner
+    // and keep the thief.
+    //
+    // A chain with no live token left is one somebody deliberately ended, and
+    // a retry is not a reason to resurrect it.
+    const grace = await this.redis.get<{ userId: string; familyId: string }>(
+      `rtg:${hash}`
+    );
+    if (grace?.userId) {
+      if (await this.familyHasLiveToken(grace.familyId)) {
+        return this.issueRotation(grace.userId, grace.familyId);
+      }
+
+      throw new Error("INVALID_REFRESH_TOKEN");
     }
 
-    // Genuinely dead: revoked long ago, expired, or never ours. Only this
-    // token is rejected. Revoking the user's other sessions here would turn
-    // one stale client — an old phone, a tab left open past the 30-day TTL —
-    // into a forced sign-out on every device they own.
+    // A token we minted, retired by a rotation, and are now being handed again
+    // well after the grace window — while it had not yet expired on its own.
+    // The client that rotated it holds the successor, so whoever is presenting
+    // *this* one is working from a copy: the token leaked, or two parties are
+    // sharing a session neither knows about.
+    //
+    // The answer is scoped to the chain it belongs to. Every token rotated out
+    // of that login dies, which includes the successor an attacker may already
+    // be holding, and the user's other devices — each its own family — keep
+    // working. Revoking the whole account instead would let one laptop that
+    // lost a response sign the user out of their phone and TV.
+    if (record && record.revoked && new Date() <= record.expires_at) {
+      await this.revokeRefreshTokenFamily(record.family_id);
+      console.warn(
+        `[account] refresh token reuse detected for user ${record.user_id}; revoked token family ${record.family_id}`
+      );
+      throw new Error("INVALID_REFRESH_TOKEN");
+    }
+
+    // Genuinely dead: expired on its own, or never ours. Only this token is
+    // rejected — an old phone or a tab left open past the 30-day TTL is a
+    // stale client, not a compromise, and must not cost the user their other
+    // sessions.
     throw new Error("INVALID_REFRESH_TOKEN");
   }
 
   private async issueRotation(
-    userId: string
+    userId: string,
+    familyId?: string
   ): Promise<{ user: User; newRawToken: string }> {
-    const newRawToken = await this.createRefreshToken(userId);
+    const newRawToken = await this.createRefreshToken(userId, familyId);
     const user        = await this.getUserById(userId);
 
     return { user, newRawToken };
+  }
+
+  /**
+   * Whether a rotation chain still has a token anyone could legitimately be
+   * holding. A healthy chain always does — the successor minted by the last
+   * rotation — so this is false exactly when the chain was torn down, by reuse
+   * detection, a logout, or a password reset.
+   *
+   * This is what the grace path consults instead of a kill marker in Redis:
+   * Postgres already records the fact, and one query on a rare path beats a
+   * second piece of state that has to be kept in step with it.
+   */
+  private async familyHasLiveToken(familyId: string): Promise<boolean> {
+    const row = await this.db.one<{ one: number }>(
+      `SELECT 1 AS one FROM refresh_tokens
+        WHERE family_id = $1 AND revoked = FALSE AND expires_at > NOW()
+        LIMIT 1`,
+      [familyId]
+    );
+
+    return row !== null;
+  }
+
+  /**
+   * Revokes every token in one rotation chain. Redis mirrors (`rt:`) are left
+   * to expire: Postgres is what `rotateRefreshToken` consults, including the
+   * grace path, which refuses a chain this has emptied.
+   */
+  private async revokeRefreshTokenFamily(familyId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE refresh_tokens
+          SET revoked = TRUE
+        WHERE family_id = $1 AND revoked = FALSE`,
+      [familyId]
+    );
   }
 
   async revokeRefreshToken(rawToken: string): Promise<void> {
@@ -470,24 +559,43 @@ export class AccountService {
 
   // ── Password reset ────────────────────────────────────────
 
+  /**
+   * Hashes a token before it is stored, and hashes what a caller presents
+   * before it is looked up — so the row holds a verifier rather than the
+   * secret itself, exactly like `refresh_tokens.token_hash`.
+   *
+   * These tokens are 32 random bytes, so a plain digest is right here: there
+   * is nothing to brute-force, and unlike a password this is compared on a
+   * path that must stay cheap.
+   */
+  private static hashToken(raw: string): string {
+    return crypto.createHash("sha256").update(raw).digest("hex");
+  }
+
   async requestPasswordReset(email: string): Promise<void> {
     const token   = crypto.randomBytes(32).toString("hex");
     const expires = new Date(Date.now() + 1000 * 60 * 60); // 1 hr
 
-    await this.db.query(
-      `UPDATE users SET reset_token = $1, reset_token_exp = $2 WHERE email = $3`,
-      [token, expires, email]
+    const result = await this.db.query(
+      `UPDATE users SET reset_token = $1, reset_token_exp = $2 WHERE email = $3
+       RETURNING id`,
+      [AccountService.hashToken(token), expires, email]
     );
 
+    // No account, no mail. The route answers 200 either way — that is what
+    // keeps this from being an account-enumeration oracle — but sending
+    // regardless made the endpoint a relay: anyone could have it deliver a
+    // "reset your password" mail to an address that never signed up.
+    if (!result.rows.length) return;
+
     await this.mailService.sendPasswordResetEmail(email, token);
-    
   }
 
   async resetPassword(token: string, newPassword: string): Promise<void> {
     const result = await this.db.query<{ id: string }>(
       `SELECT id FROM users
        WHERE reset_token = $1 AND reset_token_exp > NOW()`,
-      [token]
+      [AccountService.hashToken(token)]
     );
 
     if (!result.rows.length) throw new Error("INVALID_OR_EXPIRED_RESET_TOKEN");
@@ -529,7 +637,7 @@ export class AccountService {
       `UPDATE users SET verification_token = $1, verification_token_exp = $2
        WHERE email = $3 AND email_verified = FALSE
        RETURNING display_name`,
-      [token, AccountService.verificationExpiry(), email]
+      [AccountService.hashToken(token), AccountService.verificationExpiry(), email]
     );
     if (!result.rows.length) return;
 
@@ -558,7 +666,7 @@ export class AccountService {
          AND verification_token_exp IS NOT NULL
          AND verification_token_exp > NOW()
        RETURNING id, email, display_name, avatar_url, email_verified, created_at`,
-      [token]
+      [AccountService.hashToken(token)]
     );
     if (!result.rows.length) throw new Error("INVALID_TOKEN");
     return result.rows[0];

@@ -45,7 +45,7 @@ async function loadMyRooms() {
         return `
           <div class="room-item">
             <a class="room-item-link" href="${watchUrl(room)}">
-              <span class="room-item-code">${room.code}</span>
+              <span class="room-item-code">${escapeHtml(room.code)}</span>
               <span class="room-item-info">
                 <div class="room-item-title">${escapeHtml(titles[i])}${isOwner ? ` <span class="room-item-crown" title="Host">${ICON_CROWN}</span>` : ""}</div>
                 <div class="room-item-sub">${escapeHtml(sub)}</div>

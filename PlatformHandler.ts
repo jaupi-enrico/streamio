@@ -165,6 +165,11 @@ export class WebPlatformHandler extends PlatformHandler {
     return this.core.supportsGenres(providerName);
   }
 
+  // Not cached: a pure parse of the id, no upstream call behind it.
+  showIdForPlayableId(providerName: string, playableId: string) {
+    return this.core.showIdForPlayableId(providerName, playableId);
+  }
+
   async getGenre(providerName: string, genreId: string, page?: number) {
     this.ensureReady();
 

@@ -446,8 +446,13 @@ Account → Preferences, no dedicated toggle). Off/absent/logged-out all mean no
   (`isAdultProvider()`), but `LocalProvider`'s family never sets it.
 - **Individual titles** filtered from `/home`, `/search`, `/shows/:id` (403 on gated detail) via
   `adult-filter.service.ts` (`isAdultItem`/`filterItems`/`filterCategories`, reading `item.adult`
-  as a plain JSON property). `episodes`/`servers`/`video` are *not* item-filtered (no cheap path
-  back to the show) — someone holding an episode id can still resolve it.
+  as a plain JSON property). `servers`/`video` **403 as well**: they only ever see an id one level
+  below the title, so they walk back up to it via `showIdForPlayableId`
+  (`PlayableOwnershipProvider` in `core/models/Provider.ts`, a parse rather than a lookup) and
+  check the flag on the cached show. Filtering discovery alone left the id itself as the whole
+  gate — one obtained while the preference was on, or shared out of band, played for anyone.
+  `seasons/:id/episodes` is still unfiltered: it lists metadata, not anything playable. A provider
+  that doesn't implement the capability leaves the gate exactly where it was.
 - **Library rows** are `{provider, show_id}` only, with no `adult` flag to check — `filterAdultRows`
   in `account.router.ts` is a no-op today; a gated title is instead caught when `GET /api/shows/:id`
   403s, which `fetchShow` in `account.js` treats as permanent (drop the row).
@@ -477,12 +482,18 @@ described in `app/CLAUDE.md`.
   ready-session, **410** for expired/redeemed. Approved records get a shorter TTL than pending —
   from approval to redemption it's worth a session. `npm run test:device-login` covers the code
   helpers incl. alphabet parity with `public/scripts/tv.js`.
-- **Only a rejected refresh token ends a session.** Refresh tokens rotate on use;
-  `rotateRefreshToken` keeps a 60s grace window in Redis (`rtg:<hash>`) — a recently-retired token
-  is still honored (client whose response was lost mid-rotation). A genuinely dead token is
-  rejected on its own, never revokes other sessions. Both clients: only 401/403 *from
-  `/api/auth/refresh` itself* clears stored tokens; 429/5xx/unfollowed redirect/offline are
-  retryable and leave the session intact.
+- **Only a rejected refresh token ends a session — except on reuse.** Refresh tokens rotate on
+  use; `rotateRefreshToken` keeps a 60s grace window in Redis (`rtg:<hash>`) — a recently-retired
+  token is still honored (client whose response was lost mid-rotation), but **only while its chain
+  still has a live token**: a grace entry outlives the rotation that wrote it and nothing clears
+  it, so honoring one unconditionally would undo a logout, a password reset, or the reuse
+  revocation below. A token that merely *expired* is rejected on its own and revokes nothing. But a token this server **rotated away and
+  is handed again past the grace window, while still unexpired**, is treated as a leak: every
+  token in its `family_id` chain is revoked (migration `006`), which kills the successor an
+  attacker may already hold. Families are per-login, so the user's other devices stay signed in —
+  revoking the whole account would let one client that lost a response sign them out everywhere.
+  Both clients: only 401/403 *from `/api/auth/refresh` itself* clears stored tokens; 429/5xx/
+  unfollowed redirect/offline are retryable and leave the session intact.
 - **Redirects.** `dart:io` auto-follows GET/HEAD only, so the app follows all methods by hand,
   preserving method+body (unlike a browser, which downgrades a 302'd POST to GET). Keep this in
   mind before redirecting any write endpoint.
@@ -499,6 +510,13 @@ described in `app/CLAUDE.md`.
   redirects (an upstream redirector landing on a different host → wrong base, master loads,
   children 404). And `/api/cast-proxy?direct=1` rewrites child URIs **relative to the manifest's
   own URL**, deliberately not root-relative — a leading slash would drop the mount prefix.
+- **`POST /api/episodes/:id/video` only accepts a server that episode listed.** The `server` in the
+  body must carry a `src` present in `GET /api/episodes/:id/servers` for the same id, or the
+  request is a **400**. Nothing downstream reads `:episodeId` — `resolveVideo` gets the body and
+  nothing else — so without this the path id and the thing actually resolved are unrelated, and
+  the 18+ gate (which checks the path id) would guard a value the request never uses. Both clients
+  and the Cast receiver already POST an entry taken verbatim from the `/servers` response, so this
+  asks nothing new of them; a client that synthesizes a `server` object will break.
 - **A resolved stream carrying `headers` must be proxied, whatever its host** — those headers
   exist because forbidden fetch/XHR header names (Referer/Origin/`sec-fetch-*`) are needed, so
   only a server-side fetch can send them. `needsSourceProxy` (`watch.js`) keys off the payload for

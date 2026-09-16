@@ -30,6 +30,35 @@ export function supportsGenres(
     );
 }
 
+/**
+ * Maps a playable id — an episode, a season, a movie — back to the id of the
+ * title it belongs to.
+ *
+ * Exists so the 18+ gate can be enforced where content actually becomes
+ * viewable. `/shows/:id` can check the flag on the title it just fetched, but
+ * `/episodes/:id/servers` and `/episodes/:id/video` only ever see an id one
+ * level down, and used to resolve it without asking: anyone holding a gated
+ * episode id could still stream it whatever their preference said.
+ *
+ * Structural, and for the same reason as `GenreCapableProvider`: a base-class
+ * stub would make every provider look capable, and the caller has to be able
+ * to tell "this source cannot map ids" from "this id has no parent" — the
+ * first leaves the gate where it was, the second is a real answer.
+ */
+export interface PlayableOwnershipProvider {
+    /** The owning show's id, or null if this id doesn't belong to one. */
+    showIdForPlayableId(playableId: string): string | null;
+}
+
+export function supportsPlayableOwnership(
+    provider: Provider
+): provider is Provider & PlayableOwnershipProvider {
+    return (
+        typeof (provider as Partial<PlayableOwnershipProvider>)
+            .showIdForPlayableId === "function"
+    );
+}
+
 export class Provider implements AppItem {
     private readonly name: string;
     private logo: string;

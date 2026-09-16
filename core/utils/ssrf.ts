@@ -569,6 +569,79 @@ export async function isFetchableUrl(raw: unknown): Promise<boolean> {
   }
 }
 
+// ── Client-supplied objects ──────────────────────────────────
+
+/** No legitimate server entry carries more than a couple of URLs. */
+const MAX_SERVER_URLS = 10;
+
+/**
+ * How many values the walk will look at before giving up.
+ *
+ * There is deliberately no *depth* limit. A cap of three levels was enough for
+ * today's `VideoServer` (a flat `{id, name, src}`), but the whole point of
+ * checking centrally rather than in each provider is that a source added later
+ * inherits the check without knowing about it — and a nested `headers` or
+ * `options` bag is exactly the shape such a source would arrive in. A URL that
+ * sits one level too deep to be seen is a hole that opens silently.
+ *
+ * A node budget bounds the walk just as well and doesn't care about shape.
+ * Express's own body-size limit already bounds what can get this far; this is
+ * belt-and-braces against a pathological object.
+ */
+const MAX_SERVER_NODES = 2_000;
+
+interface WalkState {
+  found: string[];
+  nodes: number;
+}
+
+function collectUrls(value: unknown, state: WalkState): string[] {
+  if (state.nodes++ > MAX_SERVER_NODES) return state.found;
+  // Collects one past the cap on purpose: that extra entry is what tells
+  // `assertObjectFetchable` the object went over rather than landing exactly
+  // on the limit.
+  if (state.found.length > MAX_SERVER_URLS) return state.found;
+
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (looksLikeUrl(text)) {
+      state.found.push(text.startsWith("//") ? `https:${text}` : text);
+    }
+    return state.found;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectUrls(item, state);
+    return state.found;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectUrls(item, state);
+  }
+  return state.found;
+}
+
+/**
+ * Validates every URL anywhere inside a client-supplied object.
+ *
+ * The `server` object POSTed to `/episodes/:id/video` is whatever the client
+ * says it is, and a provider's `getVideo` fetches the URL inside it — so
+ * without this the endpoint resolves *any* address the container can reach and
+ * reports back what it found.
+ *
+ * Lives here rather than in the route because both layers that accept such an
+ * object need the same walk: `content.router.ts` can answer with a clean 400
+ * before anything is attempted, and `Core.resolveVideo` repeats it for callers
+ * that reach `Core` without passing through that router. Underneath both, the
+ * axios clients and `safeFetch` connect only to addresses the guard resolved
+ * itself — which is what covers the redirect hops neither layer can see.
+ */
+export async function assertObjectFetchable(value: unknown): Promise<void> {
+  const urls = collectUrls(value, { found: [], nodes: 0 });
+  if (urls.length > MAX_SERVER_URLS) {
+    throw new BlockedUrlError("Server entry carries too many URLs");
+  }
+  await Promise.all(urls.map((url) => assertFetchableUrl(url)));
+}
+
 // ── Guarded fetch ────────────────────────────────────────────
 
 const MAX_REDIRECTS = 5;

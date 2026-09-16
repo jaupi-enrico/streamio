@@ -10,13 +10,13 @@ import {
   Provider,
   Video,
 } from "./models/index.js";
-import { supportsGenres } from "./models/Provider.js";
+import { supportsGenres, supportsPlayableOwnership } from "./models/Provider.js";
 import type {
   ProviderVariant,
   ProviderFamily,
   ProviderContext,
 } from "./models/ProviderRegistry.js";
-import { assertFetchableUrl, looksLikeUrl } from "./utils/ssrf.js";
+import { assertObjectFetchable } from "./utils/ssrf.js";
 
 // The registry's own types live in `core/models/ProviderRegistry.ts`, not here:
 // every provider file imports them to declare itself, and this module imports
@@ -493,18 +493,19 @@ export class Core {
 
     const { family, variant } = entry;
 
-    const serverSrc = typeof server?.src === "string" ? server.src.trim() : "";
-
     // `server` is whatever the client POSTed, and `family.resolve` below
-    // turns `src` into an HTTP request from inside the container — so a URL
-    // that points at localhost, the compose network, or the cloud metadata
-    // service must never reach one. `content.router.ts` checks the same
-    // thing at the route; this is the layer for callers that reach `Core`
+    // turns the URL inside it into an HTTP request from inside the container —
+    // so a URL that points at localhost, the compose network, or the cloud
+    // metadata service must never reach one. `content.router.ts` checks the
+    // same thing at the route; this is the layer for callers that reach `Core`
     // without going through the router at all (the provider tests today, a
     // new route tomorrow).
-    if (serverSrc && looksLikeUrl(serverSrc)) {
-      await assertFetchableUrl(serverSrc);
-    }
+    //
+    // The whole object is walked, not just `src`: a source added later may
+    // read its URL from a nested `headers` or `options` bag, and a check that
+    // only knows about today's field would pass that straight through while
+    // still looking like it had done its job.
+    await assertObjectFetchable(server);
 
     if (family.resolve) {
       return (await withTimeout(
@@ -552,6 +553,24 @@ export class Core {
         url.startsWith("https") ||
         url.startsWith("#EXTM3U"))
     );
+  }
+
+  /**
+   * The show a playable id belongs to, or null when this provider can't say —
+   * either because it doesn't map ids at all, or because this id has no
+   * parent. Both answers leave the caller's gate open, so a provider that
+   * can't map is exactly as permissive as it was before the capability
+   * existed. See `PlayableOwnershipProvider`.
+   */
+  public showIdForPlayableId(
+    providerName: string,
+    playableId: string,
+  ): string | null {
+    const provider = this.getProvider(providerName);
+
+    return supportsPlayableOwnership(provider)
+      ? provider.showIdForPlayableId(playableId)
+      : null;
   }
 
   /** True when the provider can list genres and browse titles within one. */

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import type { UpdateService } from "../services/update.service.js";
+import { secretMatches } from "../auth/secrets.js";
 
 // Host-facing endpoints polled by the external updater (see updater/),
 // authenticated with a shared secret rather than user auth — same shape as
@@ -15,7 +16,7 @@ export function createUpdateRouter(updateService: UpdateService): Router {
       res.status(503).json({ error: "Updater not configured on this server." });
       return;
     }
-    if (req.header("X-Update-Secret") !== expected) {
+    if (!secretMatches(req.header("X-Update-Secret"), expected)) {
       res.status(401).json({
         error: "Unauthorized",
         message: "Missing or invalid X-Update-Secret header.",

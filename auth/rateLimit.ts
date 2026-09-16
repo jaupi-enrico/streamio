@@ -1,4 +1,4 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, RequestHandler, Response, NextFunction } from "express";
 import type { Redis as RedisClient } from "../database/redis.js";
 import { hashRefreshToken } from "./jwt.js";
 
@@ -22,18 +22,7 @@ interface RateLimitOptions {
  * Uses a simple fixed-window counter stored as a Redis string with TTL.
  */
 export function redisRateLimit(opts: RateLimitOptions) {
-  const keyFn =
-    opts.keyFn ??
-    ((req: Request) => {
-      const ip =
-        (req.headers["x-forwarded-for"] as string)
-          ?.split(",")[0]
-          ?.trim() ??
-        req.socket.remoteAddress ??
-        "unknown";
-
-      return ip;
-    });
+  const keyFn = opts.keyFn ?? ipKey;
 
   return async (req: Request, res: Response, next: NextFunction) => {
     if (opts.skip?.(req)) return next();
@@ -105,37 +94,62 @@ export function oauthLimiter(redis: RedisClient) {
   });
 }
 
+function ipKey(req: Request): string {
+  return (
+    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
+    req.socket.remoteAddress ??
+    "unknown"
+  );
+}
+
 /**
- * Rate-limited per refresh token, not per IP.
+ * Why the two limiters below each come as a *pair*.
  *
- * Keying this one by IP punishes the wrong thing: a household behind one NAT,
- * or a single client firing several authenticated calls at once after its
- * access token expired, can trip the limit through no fault of its own — and
- * a 429 here reads to a client as "refresh failed", i.e. a sign-out. Per
- * token, the budget is per session, and a client that has to refresh ten
- * times in a minute really is misbehaving. Requests with no token at all
- * still fall back to the IP.
+ * Keying a budget on a secret the caller supplies (a refresh token, a device
+ * code) is right for the honest case — see each one's own comment — but it is
+ * not a limit on its own: the key is whatever the request says it is, so an
+ * attacker walking the code space sends a different value every time and draws
+ * a fresh budget with each guess. That is precisely the traffic these are
+ * supposed to bound, and neither endpoint sits behind any other limiter.
+ *
+ * So the per-secret budget keeps its job (one misbehaving session, throttled
+ * without punishing its neighbours) and a per-IP backstop bounds guessing
+ * throughput. The backstop is sized well above what a household of honest
+ * clients produces, because a 429 on either route reads to a client as a
+ * failed sign-in rather than as "slow down".
  */
-export function refreshLimiter(redis: RedisClient) {
-  return redisRateLimit({
-    redis,
-    prefix:        "rl:refresh",
-    windowSeconds: 60,        // 1 min window
-    max:           10,        // 10 refresh attempts per session
-    keyFn:         (req) => {
-      const token = req.cookies?.refresh_token || req.body?.refresh_token;
-      if (typeof token === "string" && token.length > 0) {
-        return `t:${hashRefreshToken(token)}`;
-      }
+export function refreshLimiter(redis: RedisClient): RequestHandler[] {
+  return [
+    // Per IP. A session refreshes at most every 15 minutes, so a single
+    // address would need hundreds of live sessions to approach this.
+    redisRateLimit({
+      redis,
+      prefix:        "rl:refresh:ip",
+      windowSeconds: 60,
+      max:           60,
+    }),
+    // Per refresh token. Keying this by IP alone punishes the wrong thing: a
+    // household behind one NAT, or a single client firing several
+    // authenticated calls at once after its access token expired, can trip the
+    // limit through no fault of its own — and a 429 here reads to a client as
+    // "refresh failed", i.e. a sign-out. Per token, the budget is per session,
+    // and a client that has to refresh ten times in a minute really is
+    // misbehaving. Requests with no token at all fall back to the IP.
+    redisRateLimit({
+      redis,
+      prefix:        "rl:refresh",
+      windowSeconds: 60,        // 1 min window
+      max:           10,        // 10 refresh attempts per session
+      keyFn:         (req) => {
+        const token = req.cookies?.refresh_token || req.body?.refresh_token;
+        if (typeof token === "string" && token.length > 0) {
+          return `t:${hashRefreshToken(token)}`;
+        }
 
-      const ip =
-        (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
-        req.socket.remoteAddress ??
-        "unknown";
-
-      return `ip:${ip}`;
-    },
-  });
+        return `ip:${ipKey(req)}`;
+      },
+    }),
+  ];
 }
 
 /** Handing out TV pairing codes. Per IP — nothing is authenticated yet. */
@@ -149,35 +163,39 @@ export function deviceStartLimiter(redis: RedisClient) {
 }
 
 /**
- * Polling for the result, keyed by the *device code* rather than the IP.
- *
- * A TV polls every 5s for up to 10 minutes — 120 requests for one perfectly
- * well-behaved sign-in — and several devices in a household share one NAT, so
- * an IP budget here would throttle the honest case long before the abusive
- * one. Per device code the budget is per pairing attempt, and a caller
- * guessing codes gets a fresh (small) budget only by also guessing a valid
- * 32-byte secret.
+ * Polling for the pairing result. See the note above `refreshLimiter` for why
+ * this is a pair rather than the per-device-code budget alone.
  */
-export function devicePollLimiter(redis: RedisClient) {
-  return redisRateLimit({
-    redis,
-    prefix:        "rl:device:poll",
-    windowSeconds: 60 * 15,  // 15 min window
-    max:           200,       // comfortably above 10 min at 5s
-    keyFn:         (req) => {
-      const code = req.body?.device_code;
-      if (typeof code === "string" && code.length > 0) {
-        return `d:${hashRefreshToken(code)}`;
-      }
+export function devicePollLimiter(redis: RedisClient): RequestHandler[] {
+  return [
+    // Per IP. One honest pairing is ~120 polls (10 minutes at 5s), so this
+    // leaves room for several televisions signing in at once behind one NAT
+    // while still bounding how fast anyone can walk the user-code space.
+    redisRateLimit({
+      redis,
+      prefix:        "rl:device:poll:ip",
+      windowSeconds: 60 * 15,
+      max:           1000,
+    }),
+    // Per device code. A TV polls every 5s for up to 10 minutes — 120 requests
+    // for one perfectly well-behaved sign-in — and several devices in a
+    // household share one NAT, so an IP budget *alone* would throttle the
+    // honest case long before the abusive one.
+    redisRateLimit({
+      redis,
+      prefix:        "rl:device:poll",
+      windowSeconds: 60 * 15,  // 15 min window
+      max:           200,       // comfortably above 10 min at 5s
+      keyFn:         (req) => {
+        const code = req.body?.device_code;
+        if (typeof code === "string" && code.length > 0) {
+          return `d:${hashRefreshToken(code)}`;
+        }
 
-      const ip =
-        (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
-        req.socket.remoteAddress ??
-        "unknown";
-
-      return `ip:${ip}`;
-    },
-  });
+        return `ip:${ipKey(req)}`;
+      },
+    }),
+  ];
 }
 
 export function shareLimiter(redis: RedisClient) {
@@ -209,12 +227,7 @@ export function shareLimiter(redis: RedisClient) {
 function userOrIpKey(req: Request): string {
   if (req.user?.sub) return `u:${req.user.sub}`;
 
-  const ip =
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
-    req.socket.remoteAddress ??
-    "unknown";
-
-  return `ip:${ip}`;
+  return `ip:${ipKey(req)}`;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import type { IdleShutdownService } from "../services/idle-shutdown.service.js";
+import { secretMatches } from "../auth/secrets.js";
 
 // Host-facing endpoint polled by the external power-controller (see
 // power-controller/), authenticated with a shared secret — not the JWT user
@@ -13,8 +14,7 @@ export function createPowerRouter(idleShutdownService: IdleShutdownService): Rou
       res.status(503).json({ error: "Power controller not configured on this server." });
       return;
     }
-    const secret = req.header("X-Power-Secret");
-    if (secret !== expected) {
+    if (!secretMatches(req.header("X-Power-Secret"), expected)) {
       res.status(401).json({ error: "Unauthorized", message: "Missing or invalid X-Power-Secret header." });
       return;
     }

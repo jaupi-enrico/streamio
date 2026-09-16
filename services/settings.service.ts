@@ -1,6 +1,7 @@
 // settings.service.ts
 import crypto from "crypto";
 import { Database } from "../database/db.js";
+import { secretMatches } from "../auth/secrets.js";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -179,13 +180,30 @@ export class SettingsService {
   // ── Peer authentication ───────────────────────────────────
   // Looks up an enabled hosting point by the shared secret a peer presented.
 
+  // Every enabled peer's secret is read and compared in constant time rather
+  // than matched by SQL equality: `shared_secret = $1` short-circuits on the
+  // first differing byte, which is a prefix oracle for a caller willing to
+  // time enough requests. The list is admin-configured and small, so comparing
+  // all of it costs nothing — and the loop deliberately runs to the end
+  // instead of returning early, so how long the check takes doesn't depend on
+  // which peer matched either.
   async findHostingPointBySecret(
     secret: string,
   ): Promise<{ id: string; name: string } | null> {
-    return this.db.one<{ id: string; name: string }>(
-      `SELECT id, name FROM hosting_points WHERE shared_secret = $1 AND enabled = TRUE`,
-      [secret],
-    );
+    const peers = await this.db.all<{
+      id: string;
+      name: string;
+      shared_secret: string;
+    }>(`SELECT id, name, shared_secret FROM hosting_points WHERE enabled = TRUE`);
+
+    let match: { id: string; name: string } | null = null;
+    for (const peer of peers) {
+      if (secretMatches(secret, peer.shared_secret)) {
+        match = { id: peer.id, name: peer.name };
+      }
+    }
+
+    return match;
   }
 
   // ── Sync settings (app-wide) ──────────────────────────────

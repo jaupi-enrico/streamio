@@ -9,7 +9,10 @@ import {
   Video,
   Show,
 } from "../models/index.js";
-import type { GenreCapableProvider } from "../models/Provider.js";
+import type {
+  GenreCapableProvider,
+  PlayableOwnershipProvider,
+} from "../models/Provider.js";
 import type { Database } from "../../database/db.js";
 import { appBaseUrl } from "../../version.js";
 import type { ProviderModule } from "../models/ProviderRegistry.js";
@@ -138,7 +141,10 @@ const PAGE_SIZE = 24;
  * error — "not ready" and "nothing to play" look the same to a client either
  * way.
  */
-export class LocalProvider extends Provider implements GenreCapableProvider {
+export class LocalProvider
+  extends Provider
+  implements GenreCapableProvider, PlayableOwnershipProvider
+{
   constructor(private db: Database) {
     super("local", "", "en");
   }
@@ -375,6 +381,20 @@ export class LocalProvider extends Provider implements GenreCapableProvider {
    * `TmdbProvider.getServers`'s "TMDB knows this title, nothing can play it
    * yet" case.
    */
+  /**
+   * Every playable id here is already addressed by its title — `local-tv-<id>`
+   * with the season/episode in the fragment, or `local-movie-<id>` standing
+   * for itself — so this is a parse, not a query. See
+   * `PlayableOwnershipProvider`: it is what lets the 18+ gate reach
+   * `/episodes/:id/servers` and `/episodes/:id/video`.
+   */
+  public showIdForPlayableId(playableId: string): string | null {
+    const ref = parseRef(playableId);
+    if (!ref) return null;
+
+    return ref.kind === "movie" ? localMovieId(ref.id) : localTvId(ref.id);
+  }
+
   public override async getServers(id: string): Promise<VideoServer[]> {
     const ref = parseRef(id);
     if (!ref || (ref.kind !== "movie" && ref.kind !== "episode")) return [];
