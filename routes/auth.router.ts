@@ -642,8 +642,12 @@ export function createAuthRouter(db: Database, redis: Redis): Router {
   );
 
   // ── GET /api/auth/:provider/callback ─────────────────────
+  // Same budget as the initiation route above — both are unauthenticated
+  // and per-IP, and nothing else here bounds how fast one address can spam
+  // the callback with junk `state`/`code` values.
   router.get(
     "/:provider/callback",
+    oauthLimiter(redis),
     async (req: Request, res: Response) => {
       const provider = req.params.provider as OAuthProvider;
       const { code, state, error } = req.query as Record<string, string>;

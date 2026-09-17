@@ -73,7 +73,10 @@ export function createVersionRouter(db: Database, redis: Redis): Router {
   // (login.js) appends the freshly issued access token back onto the
   // `redirect` target when it's this endpoint, then completes the
   // navigation — so the file starts downloading right after sign-in.
-  router.get("/download", async (req: Request, res: Response) => {
+  // Authenticated, but the token check happens inside the handler — nothing
+  // upstream bounds how fast one address can hammer this before that check,
+  // or re-download the APK after it.
+  router.get("/download", publicLimiter(redis), async (req: Request, res: Response) => {
     const authHeader = req.headers.authorization;
     const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     const queryToken = typeof req.query.token === "string" ? req.query.token : null;
