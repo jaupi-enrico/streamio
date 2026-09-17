@@ -13,12 +13,15 @@ import {
 import type { Database } from "../database/db.js";
 import type { Redis } from "../database/redis.js";
 import { AdultService } from "../services/adult.service.js";
+import { AdultCatalogService } from "../services/adult-catalog.service.js";
 import { IntroDbService, type IntroLookupParams } from "../services/intro-db.service.js";
 import {
+    blockedGate,
     filterCategories,
     filterItems,
-    isAdultItem,
+    type AdultContext,
 } from "../services/adult-filter.service.js";
+import { adultKeyFor, allGatesOpen } from "../core/models/AdultGate.js";
 
 // Public base the Chromecast reaches us on. Child segment/variant URLs in a
 // rewritten HLS manifest MUST use this exact base — the same base the
@@ -140,6 +143,7 @@ export function createContentRouter(
 ) {
     const router = Router();
     const adultService = new AdultService(db, redis);
+    const adultCatalogService = new AdultCatalogService(redis);
     const introDb = new IntroDbService(redis);
 
     const ADULT_DISABLED = { error: "Adult content disabled" };
@@ -165,15 +169,36 @@ export function createContentRouter(
         return requested;
     }
 
-    /** Resolves the 18+ gate for one request, once. */
+    /**
+     * Resolves the 18+ gates for one request, once.
+     *
+     * `allowed` means "nothing this source serves can be hidden from this
+     * user" — every gate it declares is open — and is only a fast path around
+     * the per-item walk. A source declaring two gates with one of them open is
+     * not `allowed`: its titles behind the closed one still have to be
+     * filtered, which is why the per-item check keys off the item's own gate
+     * rather than this flag.
+     *
+     * `ctx` is a thunk because building it fetches the denylist, which on a
+     * cold cache is a crawl of the upstream site — worth avoiding entirely on
+     * the common `allowed` path.
+     */
     async function gate(req: Request) {
         const provider = resolveProviderName(readProviderFromQuery(req.query));
-        const allowed = await adultService.isAllowed(req.user?.sub);
+        const openGates = await adultService.openGates(req.user?.sub);
+        const familyGates = platformHandler.adultGatesFor(provider);
 
         return {
             provider,
-            allowed,
-            denylist: async () => new Set<string>(),
+            allowed: allGatesOpen(familyGates, openGates),
+            ctx: async (): Promise<AdultContext> => ({
+                familyGates,
+                openGates,
+                denylist: await adultCatalogService.getDenylist(
+                    provider,
+                    platformHandler.getProviderByName(provider)
+                ),
+            }),
         };
     }
 
@@ -194,28 +219,33 @@ export function createContentRouter(
      *
      * A provider that can't map the id leaves the gate open, exactly as before.
      */
-    async function playableIsGated(
+    async function playableBlockedGate(
         provider: string,
         playableId: string,
-        denylist: () => Promise<Set<string>>
-    ): Promise<boolean> {
+        ctx: () => Promise<AdultContext>
+    ): Promise<string | null> {
         const showId = platformHandler.showIdForPlayableId(provider, playableId);
-        if (!showId) return false;
+        if (!showId) return null;
 
         const show = await platformHandler.getShowDetails(provider, showId);
-        return isAdultItem(show, await denylist());
+        return blockedGate(show, await ctx());
+    }
+
+    /** The 403 body, naming the preference that would unlock this title. */
+    function adultDisabled(gate: string) {
+        return { ...ADULT_DISABLED, preference: adultKeyFor(gate) };
     }
 
     router.get("/home", async (req, res, next) => {
         try {
-            const { provider, allowed, denylist } = await gate(req);
+            const { provider, allowed, ctx } = await gate(req);
 
             const data = await platformHandler.getHome(provider);
 
             res.json({
                 data: allowed
                     ? data
-                    : filterCategories(data as any[], await denylist()),
+                    : filterCategories(data as any[], await ctx()),
             });
         } catch (err) {
             next(err);
@@ -232,13 +262,13 @@ export function createContentRouter(
                 });
             }
 
-            const { provider, allowed, denylist } = await gate(req);
+            const { provider, allowed, ctx } = await gate(req);
 
             const page = readPage(req.query.page);
             const data = await platformHandler.search(provider, query, page);
 
             let items = data as any[];
-            if (!allowed) items = filterItems(items, await denylist());
+            if (!allowed) items = filterItems(items, await ctx());
 
             res.json({ query, page, data: items });
         } catch (err) {
@@ -273,7 +303,7 @@ export function createContentRouter(
     // client can keep loading more from a single genre.
     router.get("/genres/:genreId", async (req, res, next) => {
         try {
-            const { provider, allowed, denylist } = await gate(req);
+            const { provider, allowed, ctx } = await gate(req);
 
             if (!platformHandler.supportsGenres(provider)) {
                 return res.status(400).json({
@@ -292,7 +322,7 @@ export function createContentRouter(
                 page,
                 data: {
                     ...genre,
-                    shows: allowed ? shows : filterItems(shows, await denylist()),
+                    shows: allowed ? shows : filterItems(shows, await ctx()),
                 },
             });
         } catch (err) {
@@ -302,13 +332,14 @@ export function createContentRouter(
 
     router.get("/shows/:showId", async (req, res, next) => {
         try {
-            const { provider, allowed, denylist } = await gate(req);
+            const { provider, allowed, ctx } = await gate(req);
 
             const { showId } = req.params;
             const data = await platformHandler.getShowDetails(provider, showId);
 
-            if (!allowed && isAdultItem(data, await denylist())) {
-                return res.status(403).json(ADULT_DISABLED);
+            const gated = allowed ? null : blockedGate(data, await ctx());
+            if (gated) {
+                return res.status(403).json(adultDisabled(gated));
             }
 
             res.json({ data });
@@ -331,12 +362,15 @@ export function createContentRouter(
 
     router.get("/episodes/:episodeId/servers", async (req, res, next) => {
         try {
-            const { provider, allowed, denylist } = await gate(req);
+            const { provider, allowed, ctx } = await gate(req);
 
             const { episodeId } = req.params;
 
-            if (!allowed && (await playableIsGated(provider, episodeId, denylist))) {
-                return res.status(403).json(ADULT_DISABLED);
+            const gated = allowed
+                ? null
+                : await playableBlockedGate(provider, episodeId, ctx);
+            if (gated) {
+                return res.status(403).json(adultDisabled(gated));
             }
 
             const contentType = readContentType(req.query.contentType);
@@ -378,12 +412,15 @@ export function createContentRouter(
                 });
             }
 
-            const { provider, allowed, denylist } = await gate(req);
+            const { provider, allowed, ctx } = await gate(req);
             const { episodeId } = req.params;
             const contentType = readContentType(req.query.contentType);
 
-            if (!allowed && (await playableIsGated(provider, episodeId, denylist))) {
-                return res.status(403).json(ADULT_DISABLED);
+            const gated = allowed
+                ? null
+                : await playableBlockedGate(provider, episodeId, ctx);
+            if (gated) {
+                return res.status(403).json(adultDisabled(gated));
             }
 
             // The posted `server` has to be one this episode actually offers.
@@ -558,11 +595,11 @@ export function createContentRouter(
 
             // Relative URIs inside a manifest resolve against the URL that
             // actually *served* it, not the one we asked for — the two differ
-            // whenever the upstream redirects. Pluto TV's playlist entries are
-            // jmp2.uk redirectors into pluto.tv's stitcher, and resolving its
-            // relative children ("1539795/playlist.m3u8?…") against the
-            // redirector gives https://jmp2.uk/1539795/… — a master manifest
-            // that loads perfectly and every child 404ing.
+            // whenever the upstream redirects. A source whose playlist entries
+            // are redirectors into some other host's stitcher is the case that
+            // breaks: resolving a relative child ("1539795/playlist.m3u8?…")
+            // against the redirector rather than against what answered gives a
+            // master manifest that loads perfectly and every child 404ing.
             // `servedFrom` is the last hop safeFetch actually fetched — with
             // redirects chased by hand, `upstream.url` is only ever the URL of
             // the request that produced this response's *headers*, so it can't

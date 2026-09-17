@@ -32,10 +32,20 @@ export class TvShow implements AppItem {
     public isWatching: boolean = true;
 
     /**
-     * 18+. Set from `local_titles.adult`, the flag an admin sets by hand when
-     * adding the title — see `LocalProvider.ts`.
+     * 18+. Set by the source that served this title, from whatever per-item
+     * signal it has; see `adultGates` in `ProviderRegistry.ts`.
      */
     public adult: boolean;
+
+    /**
+     * Which of its source's `adultGates` this title sits behind, when the
+     * source declares more than one. Null takes the family's first gate.
+     *
+     * Assigned after construction like `details`, never a positional argument:
+     * the constructor already takes nineteen, and a twentieth would be one
+     * silent mis-assignment away at every call site.
+     */
+    public adultGate: string | null = null;
 
     /**
      * Everything the source publishes that has no flat field here — original
@@ -194,6 +204,7 @@ export class TvShow implements AppItem {
         newTv.isWatching = update.isWatching ?? this.isWatching;
         newTv.favoritedAtMillis = update.favoritedAtMillis ?? this.favoritedAtMillis;
         newTv.details = update.details ?? this.details;
+        newTv.adultGate = update.adultGate ?? this.adultGate;
         if (update.itemType || this.itemType) newTv.itemType = update.itemType ?? this.itemType;
         return newTv;
     }

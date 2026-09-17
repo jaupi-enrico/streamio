@@ -314,8 +314,11 @@ async function loadDetails() {
     const data = await res.json();
 
     if (res.status === 403) {
+      // The server names which preference unlocks this one — sources gate
+      // different kinds of 18+ content behind different keys.
+      const pref = escapeHtml(data.preference || "adult-all");
       document.getElementById("backdropSection").innerHTML =
-        `<div class="empty-state"><h2>Not Available</h2><p>This title is flagged 18+. Enable <code>adult_content</code> on your account to view it.</p>
+        `<div class="empty-state"><h2>Not Available</h2><p>This title is flagged 18+. Enable <code>${pref}</code> on your account to view it.</p>
          <a href="/account" style="color:var(--red);text-decoration:none;margin-top:20px;font-weight:600;">Go to Preferences →</a></div>`;
       return;
     }

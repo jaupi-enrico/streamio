@@ -6,7 +6,8 @@ import type { Redis } from "../database/redis.js";
 import type { Database } from "../database/db.js";
 import type { RoomService } from "../services/room.service.js";
 import type { RoomHub } from "../services/room-socket.service.js";
-import { AdultService, ADULT_PREFERENCE_KEY } from "../services/adult.service.js";
+import { AdultService } from "../services/adult.service.js";
+import { isAdultPreferenceKey } from "../core/models/AdultGate.js";
 import { StatsService } from "../services/stats.service.js";
 import type { WebPlatformHandler } from "../PlatformHandler.js";
 
@@ -26,12 +27,13 @@ export function createAccountRouter(
   const statsService = new StatsService(db);
 
   /**
-   * The content routes cache the resolved 18+ preference for a minute, so
-   * writing it has to drop that entry — otherwise the toggle appears not to
-   * take effect until the cache expires.
+   * The content routes cache the user's resolved 18+ gates for a minute, so
+   * writing any `adult-` preference has to drop that entry — otherwise the
+   * change appears not to take effect until the cache expires. A prefix test,
+   * not a list: which gates exist is whatever the registered providers declare.
    */
   const invalidateIfAdultKey = async (userId: string, key: string) => {
-    if (key === ADULT_PREFERENCE_KEY) await adultService.invalidate(userId);
+    if (isAdultPreferenceKey(key)) await adultService.invalidate(userId);
   };
 
   /**

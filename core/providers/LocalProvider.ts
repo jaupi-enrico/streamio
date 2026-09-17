@@ -459,6 +459,9 @@ export const providerFamily: ProviderModule = {
           id: "local",
           displayName: "My Library",
           description: "Your own uploaded movies and shows.",
+          // `local_titles.adult`, set by hand by whoever added the title, so
+          // the gate is yours to define rather than a property of some site.
+          adultGates: ["local"],
           // Its server `src` is a `local_media_files` id, not a URL — nothing
           // for `resolveVideo`'s SSRF check to validate as fetchable.
           resolve: (p, s) => (p as LocalProvider).getVideo(s),

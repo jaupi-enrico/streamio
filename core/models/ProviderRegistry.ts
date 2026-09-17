@@ -56,7 +56,7 @@ export type ProviderFamily = {
   id: string;
   /**
    * How the name is written for a human — the internal names are lowercase and
-   * unspaced, so capitalizing one gives things like "Localprovider". Lives here
+   * unspaced, so capitalizing one gives things like "Someprovider". Lives here
    * rather than in each client because every client needs the same string, and
    * a client that hardcodes it can't label a provider added server-side.
    * Carries no language: that is what `ProviderVariant.languageLabel` is for.
@@ -65,18 +65,28 @@ export type ProviderFamily = {
   /** One line introducing the source, same rationale as `displayName`. */
   description: string;
   /**
-   * Whole-provider 18+ source. Hidden from `getListOfProviders()` unless the
-   * caller explicitly asks for adult providers; the routers reject content
-   * requests for one outright, ahead of dispatch.
+   * Whole-provider 18+ source. Hidden from `getListOfProviders()` unless one of
+   * its `adultGates` is open; the routers reject content requests for one
+   * outright, ahead of dispatch.
    */
   adult?: boolean;
   /**
-   * The source rates its own catalogue for maturity (an `age` field on every
-   * item) rather than leaving 18+ titles to be flagged one at a time. Lives
-   * here so adding a language to such a source can't forget to extend a
-   * hardcoded list of slugs somewhere else.
+   * The kinds of 18+ content this source serves, each opened by its own
+   * `adult-<gate>` preference (see `core/models/AdultGate.ts`). A source with
+   * no 18+ content at all omits this.
+   *
+   * Declared here — in the provider's own file, beside the class — so that
+   * adding a source, or a language of one, can never leave a gate hanging off
+   * a hardcoded list of slugs somewhere else. Nothing outside the provider
+   * files names a gate.
+   *
+   * More than one is allowed: a source mixing, say, age-rated titles with
+   * outright pornography declares both and tags each item with the gate it
+   * belongs to (`adultGate` on `Movie`/`TvShow`). `adultGates[0]` is the
+   * default for a flagged item that names none, so the common single-gate case
+   * needs no per-item work.
    */
-  ageRatedAdult?: boolean;
+  adultGates?: string[];
   /**
    * How a raw server entry becomes a playable `Video`. A family without this
    * has no way to resolve video at all — see `resolveVideo` in `core/core.ts`.
@@ -92,10 +102,10 @@ export type ProviderFamily = {
 /**
  * What a provider module may need in order to construct itself.
  *
- * `db` exists only for `LocalProvider` — every other provider scrapes a site or
- * calls TMDB and has never needed a database handle. A `Core` built without one
- * (the ad hoc `core/test.ts` script, `tests/providers.test.mjs`) simply doesn't
- * register the families that require it.
+ * `db` exists only for sources backed by this server's own tables — one that
+ * reads a remote site or API has never needed a database handle. A `Core` built
+ * without one (the ad hoc `core/test.ts` script, `tests/providers.test.mjs`)
+ * simply doesn't register the families that require it.
  */
 export type ProviderContext = { db?: Database };
 

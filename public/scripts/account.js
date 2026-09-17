@@ -814,9 +814,28 @@ const PREF_META = {
   preferred_lang:  { desc: 'Preferred audio/subtitle language' },
   default_quality: { desc: 'Default video quality selection' },
   notifications:   { desc: 'Receive email notifications' },
-  // Added with "+ Add Custom" (value true) and enforced server-side.
-  adult_content: { desc: 'Show titles in your library flagged 18+' },
 };
+
+/** Every 18+ preference key starts with this — mirrors core/models/AdultGate.ts. */
+const ADULT_KEY_PREFIX = 'adult-';
+
+/**
+ * The line under a preference's name.
+ *
+ * 18+ gates are deliberately absent from `PREF_META`: which gates exist is
+ * whatever the installed sources declare, so a list here would go stale the
+ * moment one is added or renamed, and would name sources this page must know
+ * nothing about. The label is derived from the key itself instead.
+ */
+function prefDesc(key) {
+  if (PREF_META[key]) return PREF_META[key].desc;
+  if (!key.startsWith(ADULT_KEY_PREFIX)) return '';
+
+  const gate = key.slice(ADULT_KEY_PREFIX.length);
+  return gate === 'all'
+    ? 'Show every kind of 18+ content'
+    : `Show 18+ content of type “${gate}”`;
+}
 
 async function loadPreferences() {
   try {
@@ -839,24 +858,24 @@ function renderPreferences(prefs) {
     return;
   }
   const html = `<div class="pref-grid">${keys.map(key => {
-    const meta = PREF_META[key] || {};
+    const desc = prefDesc(key);
     const val  = prefs[key];
     const isBool = typeof val === 'boolean';
     return `
     <div class="pref-row">
       <div class="pref-info">
-        <div class="pref-key">${key}</div>
-        ${meta.desc ? `<div class="pref-desc">${meta.desc}</div>` : ''}
+        <div class="pref-key">${escapeHtml(key)}</div>
+        ${desc ? `<div class="pref-desc">${escapeHtml(desc)}</div>` : ''}
       </div>
       ${isBool ? `
         <label class="toggle">
-          <input type="checkbox" ${val ? 'checked' : ''} data-pref-key="${key}" class="pref-toggle">
+          <input type="checkbox" ${val ? 'checked' : ''} data-pref-key="${escapeHtml(key)}" class="pref-toggle">
           <span class="toggle-slider"></span>
         </label>` : `
-        <div class="pref-val">${JSON.stringify(val)}</div>
+        <div class="pref-val">${escapeHtml(JSON.stringify(val))}</div>
         <div class="pref-actions">
-          <button class="btn btn-ghost btn-sm btn-icon" title="Edit" data-edit-pref="${key}" data-edit-val='${JSON.stringify(val)}'>✎</button>
-          <button class="btn btn-danger btn-sm btn-icon" title="Delete" data-delete-pref="${key}">✕</button>
+          <button class="btn btn-ghost btn-sm btn-icon" title="Edit" data-edit-pref="${escapeHtml(key)}" data-edit-val='${escapeHtml(JSON.stringify(val))}'>✎</button>
+          <button class="btn btn-danger btn-sm btn-icon" title="Delete" data-delete-pref="${escapeHtml(key)}">✕</button>
         </div>`}
     </div>`;
   }).join('')}</div>`;

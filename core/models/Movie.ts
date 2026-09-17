@@ -35,10 +35,17 @@ export class Movie implements WatchItem, AppItem {
     public watchHistory: WatchHistory | null = null;
 
     /**
-     * 18+. Set from `local_titles.adult`, the flag an admin sets by hand when
-     * adding the title — see `LocalProvider.ts`.
+     * 18+. Set by the source that served this title, from whatever per-item
+     * signal it has; see `adultGates` in `ProviderRegistry.ts`.
      */
     public adult: boolean;
+
+    /**
+     * Which of its source's `adultGates` this title sits behind, when the
+     * source declares more than one. Null takes the family's first gate.
+     * Assigned after construction, for the same reason as `details` below.
+     */
+    public adultGate: string | null = null;
 
     /**
      * Everything the source publishes that has no flat field here — original
@@ -173,6 +180,7 @@ export class Movie implements WatchItem, AppItem {
         newMovie.watchedDate = update.watchedDate ?? this.watchedDate;
         newMovie.watchHistory = update.watchHistory ?? this.watchHistory;
         newMovie.details = update.details ?? this.details;
+        newMovie.adultGate = update.adultGate ?? this.adultGate;
         
         if (update.itemType || this.itemType) {
             newMovie.itemType = update.itemType ?? this.itemType;

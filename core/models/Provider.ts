@@ -59,6 +59,31 @@ export function supportsPlayableOwnership(
     );
 }
 
+/**
+ * The 18+ denylist backstop, for a provider whose listing/detail payloads
+ * don't reliably carry a per-item `adult` signal —
+ * home rails and search cards in particular often expose no genre at all.
+ * A provider that can enumerate its own adult catalogue implements this so
+ * `services/adult-catalog.service.ts` can cache the result and fold it into
+ * `isAdultItem`'s denylist rather than leaving those titles ungated.
+ *
+ * Structural, same reasoning as `GenreCapableProvider`: nothing here needs a
+ * base-class stub that would make every provider look capable.
+ */
+export interface AdultCatalogProvider {
+    /** Every id in this provider's adult catalogue, for the denylist cache. */
+    listAdultIds(): Promise<string[]>;
+}
+
+export function supportsAdultCatalog(
+    provider: Provider
+): provider is Provider & AdultCatalogProvider {
+    return (
+        typeof (provider as Partial<AdultCatalogProvider>).listAdultIds ===
+        "function"
+    );
+}
+
 export class Provider implements AppItem {
     private readonly name: string;
     private logo: string;

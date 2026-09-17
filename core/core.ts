@@ -11,6 +11,7 @@ import {
   Video,
 } from "./models/index.js";
 import { supportsGenres, supportsPlayableOwnership } from "./models/Provider.js";
+import { anyGateOpen } from "./models/AdultGate.js";
 import type {
   ProviderVariant,
   ProviderFamily,
@@ -116,6 +117,12 @@ export type ProviderInfo = {
   displayName: string;
   description: string;
   adult: boolean;
+  /**
+   * The kinds of 18+ content this source serves, each opened by its own
+   * `adult-<gate>` preference. Empty for a source with none. Additive, like
+   * `family`/`languages` — a client that ignores it sees no change.
+   */
+  adultGates: string[];
   /** Family id shared by every language of this source. */
   family: string;
   /** This variant's language code. */
@@ -147,13 +154,13 @@ export class Core {
    * the time this module is evaluated. That is what keeps this constructor
    * synchronous — see the note on `providerModules`.
    *
-   * `db` is optional, and exists only for `LocalProvider` — every other
-   * provider scrapes a site or calls TMDB and has never needed a database
+   * `db` is optional, and exists only for a source backed by this server's own
+   * tables — one that reads a remote site or API has never needed a database
    * handle. A module whose `create` returns null for the context it is given
-   * is left unregistered, which is how the `local` family is absent when a
-   * `Core` is built without one (the ad hoc `core/test.ts` script, the
-   * provider tests) — rather than forcing every caller of `Core` to supply a
-   * `db` it has no use for.
+   * is left unregistered, which is how such a family is absent when a `Core` is
+   * built without one (the ad hoc `core/test.ts` script, the provider tests) —
+   * rather than forcing every caller of `Core` to supply a `db` it has no use
+   * for.
    */
   constructor(db?: Database) {
     const ctx: ProviderContext = { db };
@@ -219,14 +226,17 @@ export class Core {
   }
 
   /**
-   * Every variant of every family, adult sources filtered unless asked for,
-   * disabled variants always filtered — mirrors the adult filter, since a
-   * disabled provider must disappear from every public listing/validation
-   * the same way an adult one does when not asked for.
+   * Every variant of every family, whole-provider 18+ sources filtered unless
+   * one of their gates is open, disabled variants always filtered — mirrors the
+   * adult filter, since a disabled provider must disappear from every public
+   * listing/validation the same way a gated one does.
+   *
+   * One open gate is enough to list a source that declares several: its titles
+   * behind the other gates are still filtered item by item downstream.
    */
-  private listVariants(includeAdult: boolean) {
+  private listVariants(openGates: ReadonlySet<string>) {
     return this.families
-      .filter((f) => includeAdult || !f.adult)
+      .filter((f) => !f.adult || anyGateOpen(f.adultGates, openGates))
       .flatMap((f) =>
         f.variants
           .filter((variant) => !variant.disabled)
@@ -277,11 +287,13 @@ export class Core {
    * language variant from it would make that language unselectable and would
    * silently reset anyone already on it.
    *
-   * Adult providers are omitted unless asked for, so a caller that forgets to
-   * thread the user's 18+ preference through leaks nothing.
+   * Adult providers are omitted unless one of their gates is open, so a caller
+   * that forgets to thread the user's open gates through leaks nothing.
    */
-  public getListOfProviders(includeAdult: boolean = false): string[] {
-    return this.listVariants(includeAdult).map((e) => e.variant.slug);
+  public getListOfProviders(
+    openGates: ReadonlySet<string> = new Set(),
+  ): string[] {
+    return this.listVariants(openGates).map((e) => e.variant.slug);
   }
 
   /**
@@ -292,8 +304,10 @@ export class Core {
    * Still flat, one entry per language variant — see `ProviderInfo`. The
    * grouped view is `getProviderFamilies()`.
    */
-  public getProviderCatalog(includeAdult: boolean = false): ProviderInfo[] {
-    return this.listVariants(includeAdult).map(({ family, variant }) =>
+  public getProviderCatalog(
+    openGates: ReadonlySet<string> = new Set(),
+  ): ProviderInfo[] {
+    return this.listVariants(openGates).map(({ family, variant }) =>
       this.toProviderInfo(family, variant),
     );
   }
@@ -311,6 +325,7 @@ export class Core {
           : `${family.displayName} (${variant.languageLabel})`),
       description: family.description,
       adult: family.adult === true,
+      adultGates: family.adultGates ?? [],
       family: family.id,
       language: variant.language,
       languages: this.languagesOf(family),
@@ -370,6 +385,16 @@ export class Core {
 
   public isAdultProvider(name: string): boolean {
     return this.bySlug.get(name)?.family.adult === true;
+  }
+
+  /**
+   * The 18+ gates the source behind this slug declares — what the content
+   * routes check an item against. Empty for an unknown slug or a source with
+   * no 18+ content; an item that turns up flagged anyway then answers to the
+   * master key alone (see `gateForItem`).
+   */
+  public adultGatesFor(name: string): string[] {
+    return this.bySlug.get(name)?.family.adultGates ?? [];
   }
 
   public getDefaultProvider(): Provider {

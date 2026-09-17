@@ -1,39 +1,67 @@
 /**
  * Display metadata for the content providers.
  *
- * Shared because the home chips and the /providers cards both label the same
- * list. Only `local` (the user's own uploaded library) is registered — this
- * fallback copy exists for the same reason it always did (the frontend ships
- * with the server and can't fall out of step with the registry), not because
- * more than one entry is expected here.
+ * The server owns every label — `GET /api/providers` sends a `displayName` and
+ * `description` with each entry — so there is deliberately no table of them
+ * here. A hardcoded one would name sources this bundle must know nothing about
+ * and would go stale the moment a source is added, renamed or removed.
+ *
+ * Instead the labels the server sent are remembered as they arrive
+ * (`rememberCatalog`, called automatically by `groupFamilies`) and shared
+ * across pages, because some pages render a provider chip from a stored slug
+ * without ever fetching the catalogue themselves. A slug we have never been
+ * told about falls back to the slug itself, humanized.
  */
-export const displayNames = {
-  local: "My Library",
-};
+const LABEL_STORAGE_KEY = "streamio.providerLabels";
 
-export const descriptions = {
-  local: "Your own uploaded movies and shows",
-};
+/** slug → { name, desc }, seeded from storage so a first paint has labels. */
+const labels = new Map(Object.entries(readStoredLabels()));
+
+function readStoredLabels() {
+  try {
+    return JSON.parse(localStorage.getItem(LABEL_STORAGE_KEY) || "{}") || {};
+  } catch {
+    // Private mode, blocked site data, or a corrupt value — labels are a
+    // nicety, so this degrades to the humanized slug rather than throwing.
+    return {};
+  }
+}
 
 /**
- * Providers the server only lists once the `adult_content` preference is on —
- * used purely to badge them in the UI. The gate itself is server-side; an
- * entry missing here changes nothing about what is served. `local` is never
- * a whole-provider adult source — its titles are gated individually by their
- * own `adult` flag.
+ * Records the labels in a `GET /api/providers` catalog. Safe to call often —
+ * it only writes when something actually changed.
  */
-export const adultProviders = new Set([]);
+export function rememberCatalog(catalog = []) {
+  let changed = false;
+
+  for (const entry of catalog) {
+    if (!entry?.name) continue;
+    const known = labels.get(entry.name);
+    const name = entry.displayName || known?.name || "";
+    const desc = entry.description || known?.desc || "";
+    if (known?.name === name && known?.desc === desc) continue;
+    labels.set(entry.name, { name, desc });
+    changed = true;
+  }
+
+  if (!changed) return;
+  try {
+    localStorage.setItem(
+      LABEL_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(labels)),
+    );
+  } catch {
+    // Storage unavailable — the in-memory map still serves this page.
+  }
+}
 
 export function getName(p) {
-  return displayNames[p] || p.charAt(0).toUpperCase() + p.slice(1);
+  if (!p) return "";
+  return labels.get(p)?.name || p.charAt(0).toUpperCase() + p.slice(1);
 }
 
 export function getDesc(p) {
-  return descriptions[p] || "Streaming content source";
-}
-
-export function isAdultProvider(p) {
-  return adultProviders.has(p);
+  return labels.get(p)?.desc || "Streaming content source";
 }
 
 /**
@@ -72,6 +100,10 @@ export function getLanguageLabel(code) {
  * the ungrouped list did.
  */
 export function groupFamilies(catalog = []) {
+  // Every page that renders a picker passes through here, which is what keeps
+  // the shared label cache fed for the pages that don't fetch the catalogue.
+  rememberCatalog(catalog);
+
   const families = [];
   const byId = new Map();
 
@@ -91,7 +123,7 @@ export function groupFamilies(catalog = []) {
       families.push(family);
     }
 
-    if (entry.adult ?? isAdultProvider(entry.name)) family.adult = true;
+    if (entry.adult) family.adult = true;
 
     // The family is named after its default variant — the one whose slug is
     // the family id. Until that one is seen, any variant's label beats none.

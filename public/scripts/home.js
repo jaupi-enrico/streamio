@@ -508,8 +508,8 @@ function providerLabel(slug) {
   for (const family of providerFamilies) {
     const lang = family.languages.find((l) => l.slug === slug);
     if (!lang) continue;
-    // The code, not the label: this goes on a 160px poster, and
-    // "Pluto TV · United States" is truncated to uselessness there.
+    // The code, not the label: this goes on a 160px poster, where a source
+    // name plus a spelled-out country is truncated to uselessness.
     return family.languages.length > 1 && lang.code
       ? `${family.displayName} · ${lang.code.toUpperCase()}`
       : family.displayName;

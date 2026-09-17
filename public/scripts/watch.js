@@ -201,9 +201,8 @@ function awaitPlayerDurationMs(player) {
   });
 }
 
-// TheIntroDB is keyed by TMDB/IMDB id. A local title only has one when its
-// `imdb_id` was filled in (by hand, or via the admin "fill in from a TMDB id"
-// flow) — absent that, there's nothing to look up and the button never
+// TheIntroDB is keyed by TMDB/IMDB id, so a title only resolves when the source
+// published one — absent that, there's nothing to look up and the button never
 // appears.
 async function loadIntroSegments() {
   currentIntroSegments = null;
@@ -224,9 +223,8 @@ async function loadIntroSegments() {
     return;
   }
 
-  // `local` ids never carry a numeric TMDB id (see LocalProvider.ts's
-  // `local-movie-<uuid>`/`local-tv-<uuid>` scheme) — only `imdbId`, when the
-  // title has one on file, feeds the lookup below.
+  // Show ids are opaque provider strings, never a numeric TMDB id — only
+  // `imdbId`, when the title carries one, feeds the lookup below.
   const tmdbId = "";
   const imdbId = currentShowData?.imdbId || "";
   const year = currentShowData?.released
@@ -3647,8 +3645,10 @@ async function loadWatchPage() {
     );
     const data = await res.json();
     if (res.status === 403) {
+      // The server names which preference unlocks this one — sources gate
+      // different kinds of 18+ content behind different keys.
       throw new Error(
-        'This title is flagged 18+. Enable "adult_content" on your account to watch it.',
+        `This title is flagged 18+. Enable "${data.preference || "adult-all"}" on your account to watch it.`,
       );
     }
     if (!res.ok || !data.data) throw new Error("Show not found");

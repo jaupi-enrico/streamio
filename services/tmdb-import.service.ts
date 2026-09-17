@@ -70,7 +70,7 @@ export async function fetchTmdbTvSnapshot(tmdbId: number): Promise<TmdbTitleSnap
 
   // Season 0 ("Specials") is real content but not what an admin importing a
   // show wants pre-created by default — left in the list, just sorted last,
-  // matching how `Tmdb.ts` orders seasons for the same reason.
+  // ordered the same way a source would for the same reason.
   const seasonNumbers = (details.seasons ?? [])
     .map((s: any) => s.season_number as number)
     .sort((a: number, b: number) => (a === 0 ? 1 : b === 0 ? -1 : a - b));

@@ -26,9 +26,9 @@ function readProviderFromQuery(query: unknown) {
 function isKnownProvider(
     platformHandler: WebPlatformHandler,
     provider: string,
-    includeAdult: boolean
+    openGates: ReadonlySet<string>
 ) {
-    return platformHandler.getListOfProviders(includeAdult).includes(provider);
+    return platformHandler.getListOfProviders(openGates).includes(provider);
 }
 
 export function createProviderRouter(
@@ -39,9 +39,9 @@ export function createProviderRouter(
     const router = Router();
     const adultService = new AdultService(db, redis);
 
-    // Mounted under optionalAuth: an anonymous caller has no req.user and is
-    // refused, which is what keeps 18+ providers off the list by default.
-    const isAllowed = (req: Request) => adultService.isAllowed(req.user?.sub);
+    // Mounted under optionalAuth: an anonymous caller has no req.user and so
+    // opens no gates, which is what keeps 18+ providers off the list by default.
+    const openGates = (req: Request) => adultService.openGates(req.user?.sub);
 
     // `providers` (bare names) and `catalog` (names + display metadata) are the
     // same list twice. Both are sent because clients predating `catalog` read
@@ -56,11 +56,11 @@ export function createProviderRouter(
     // so a newer client groups on `family` and draws a language selector.
     router.get("/", async (req, res, next) => {
         try {
-            const includeAdult = await isAllowed(req);
+            const gates = await openGates(req);
 
             res.json({
-                providers: platformHandler.getListOfProviders(includeAdult),
-                catalog: platformHandler.getProviderCatalog(includeAdult),
+                providers: platformHandler.getListOfProviders(gates),
+                catalog: platformHandler.getProviderCatalog(gates),
                 // The registry slug, which is what a client sends back as
                 // `?provider=` — not `getDefaultProvider().getName()`, which
                 // is the provider's own idea of its name.
@@ -74,7 +74,7 @@ export function createProviderRouter(
     router.get("/current", async (req, res, next) => {
         try {
             const provider = readProviderFromQuery(req.query);
-            const current = isKnownProvider(platformHandler, provider, await isAllowed(req))
+            const current = isKnownProvider(platformHandler, provider, await openGates(req))
                 ? provider
                 : platformHandler.getDefaultProviderName();
 
@@ -96,7 +96,7 @@ export function createProviderRouter(
                 });
             }
 
-            if (!isKnownProvider(platformHandler, provider, await isAllowed(req))) {
+            if (!isKnownProvider(platformHandler, provider, await openGates(req))) {
                 return res.status(400).json({
                     error: `Unknown provider: ${provider}`
                 });
@@ -118,7 +118,7 @@ export function createProviderRouter(
                 });
             }
 
-            if (!isKnownProvider(platformHandler, provider, await isAllowed(req))) {
+            if (!isKnownProvider(platformHandler, provider, await openGates(req))) {
                 return res.status(400).json({
                     error: `Unknown provider: ${provider}`
                 });

@@ -4,9 +4,9 @@ export class PlatformHandler {
     protected platform: string | null = null;
     protected core: Core;
 
-    // `db` is optional because most callers of `Core` (every provider but
-    // the local one scrapes a site or calls TMDB, needing no database at
-    // all) have never had to supply one — see core/core.ts's constructor.
+    // `db` is optional because most callers of `Core` have never had to supply
+    // one: only a source backed by this server's own tables needs it — see
+    // core/core.ts's constructor.
     constructor(platform: string, db?: Database) {
         this.platform = platform;
         this.core = new Core(db);
@@ -20,16 +20,20 @@ export class PlatformHandler {
         return this.core.getDefaultProviderName();
     }
 
-    getListOfProviders(includeAdult: boolean = false) {
-        return this.core.getListOfProviders(includeAdult);
+    getListOfProviders(openGates: ReadonlySet<string> = new Set()) {
+        return this.core.getListOfProviders(openGates);
     }
 
-    getProviderCatalog(includeAdult: boolean = false) {
-        return this.core.getProviderCatalog(includeAdult);
+    getProviderCatalog(openGates: ReadonlySet<string> = new Set()) {
+        return this.core.getProviderCatalog(openGates);
     }
 
     isAdultProvider(name: string) {
         return this.core.isAdultProvider(name);
+    }
+
+    adultGatesFor(name: string) {
+        return this.core.adultGatesFor(name);
     }
 
     getProviderByName(name: string) {
