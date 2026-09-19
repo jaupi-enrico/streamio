@@ -1,4 +1,6 @@
 // Password reset — the confirm half. Requesting the email lives in login.js.
+// Applies the saved display/accessibility preferences to this page too.
+import "/scripts/preferences.js";
 
 const REDIRECT_SECONDS = 3;
 

@@ -2,9 +2,13 @@ import { ensureSessionQuietly, fetchPublic, escapeHtml } from '/scripts/auth.js'
 import { showMeta, isSeries } from '/scripts/show-meta.js';
 import { groupFamilies } from '/scripts/provider-names.js';
 import { ICON_FILM, ICON_SEARCH, ICON_INBOX, ICON_ALERT } from '/scripts/icons.js';
+import { getPreferences, loadPreferences } from '/scripts/preferences.js';
 
 const providerStorageKey = 'streamio.provider';
 const recentKey = 'streamio.recentSearches';
+
+// Cached values until the boot below replaces them with the server's.
+let prefs = getPreferences();
 
 const $ = (id) => document.getElementById(id);
 
@@ -58,6 +62,7 @@ function syncUrl() {
 }
 
 function readRecent() {
+    if (!prefs.search_history) return [];
     try {
         const parsed = JSON.parse(localStorage.getItem(recentKey) || '[]');
         return Array.isArray(parsed) ? parsed.filter((s) => typeof s === 'string') : [];
@@ -67,6 +72,7 @@ function readRecent() {
 }
 
 function rememberSearch(query) {
+    if (!prefs.search_history) return;
     const recent = [query, ...readRecent().filter((q) => q !== query)].slice(0, 8);
     try {
         localStorage.setItem(recentKey, JSON.stringify(recent));
@@ -535,6 +541,13 @@ $('sortSelect').addEventListener('change', () => {
 // restored before the first query — and before the provider list, which hides
 // adult providers from anyone without the preference.
 await ensureSessionQuietly();
+prefs = await loadPreferences();
+if (!prefs.search_history) {
+    // "Turning it off also clears it" — what was stored stays gone.
+    try { localStorage.removeItem(recentKey); } catch { /* storage blocked */ }
+}
+state.sort = prefs.search_sort;
+$('sortSelect').value = state.sort;
 
 const params = new URLSearchParams(location.search);
 const initialProvider = params.get('provider');

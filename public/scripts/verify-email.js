@@ -1,6 +1,8 @@
 // Email verification: auto-verify a token from the URL, and fall back to the
 // paste-a-code / resend panel. That fallback is the common path, not an edge
 // case — see the comment in verify-email.html.
+// Applies the saved display/accessibility preferences to this page too.
+import "/scripts/preferences.js";
 
 const REDIRECT_SECONDS = 3;
 

@@ -74,6 +74,13 @@ export interface ShareSummary extends ShareRow {
 
 // ── ShareService ─────────────────────────────────────────────
 
+/** One or more recipients' `share_privacy` preference refuses this sender. */
+export class RecipientRefusesSharesError extends Error {
+  constructor(readonly names: string[]) {
+    super("RECIPIENT_REFUSES_SHARES");
+  }
+}
+
 export class ShareService {
   constructor(
     private readonly db: Database,
@@ -114,6 +121,28 @@ export class ShareService {
     );
     if (existing.length !== recipientIds.length) {
       throw new Error("RECIPIENT_NOT_FOUND");
+    }
+
+    // Each recipient's `share_privacy` preference (public/scripts/preferences.js
+    // defines it): "nobody" refuses every share, "following" only shares from
+    // accounts the recipient follows. Absent or any other value means everyone,
+    // which is how sharing worked before the preference existed. Checked here
+    // rather than in the page so the app and direct API calls are held to it too.
+    const refusing = await this.db.all<{ display_name: string | null }>(
+      `SELECT u.display_name
+         FROM users u
+         JOIN user_preferences p ON p.user_id = u.id AND p.key = 'share_privacy'
+        WHERE u.id = ANY($1::uuid[])
+          AND (p.value = '"nobody"'::jsonb
+               OR (p.value = '"following"'::jsonb
+                   AND NOT EXISTS (SELECT 1 FROM follows f
+                                    WHERE f.follower_id = u.id AND f.followee_id = $2)))`,
+      [recipientIds, senderId]
+    );
+    if (refusing.length) {
+      throw new RecipientRefusesSharesError(
+        refusing.map((r) => r.display_name || "A recipient")
+      );
     }
 
     const shareId = await this.db.transaction(async (client: pg.PoolClient) => {

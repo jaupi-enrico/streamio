@@ -8,10 +8,13 @@ import { initShareBadge } from "/scripts/social.js";
 import { groupFamilies, getName } from "/scripts/provider-names.js";
 import { ICON_FILM, ICON_CALENDAR } from "/scripts/icons.js";
 import { showMeta, isSeries } from "/scripts/show-meta.js";
+import { getPreferences, loadPreferences } from "/scripts/preferences.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 const providerKey = "streamio.provider";
+// Cached values until the init below replaces them with the server's.
+let prefs = getPreferences();
 let activeProvider = localStorage.getItem(providerKey) || "";
 // Sources grouped by family — each carries the languages it is available in.
 let providerFamilies = [];
@@ -283,6 +286,14 @@ function buildHero(items) {
   clearInterval(heroTimer);
   renderHeroSlide(0);
   renderHeroDots();
+  startHeroRotation();
+}
+
+function startHeroRotation() {
+  clearInterval(heroTimer);
+  // Reduce motion stops the rotation too: a slide changing on its own is
+  // exactly the kind of movement it asks to be spared.
+  if (!prefs.hero_autoplay || prefs.reduce_motion) return;
   heroTimer = setInterval(() => {
     heroIdx = (heroIdx + 1) % heroItems.length;
     renderHeroSlide(heroIdx);
@@ -367,12 +378,7 @@ function renderHeroDots() {
         heroIdx = parseInt(dot.dataset.i);
         renderHeroSlide(heroIdx);
         updateHeroDots();
-        clearInterval(heroTimer);
-        heroTimer = setInterval(() => {
-          heroIdx = (heroIdx + 1) % heroItems.length;
-          renderHeroSlide(heroIdx);
-          updateHeroDots();
-        }, 7000);
+        startHeroRotation();
       });
     });
 }
@@ -519,6 +525,7 @@ function providerLabel(slug) {
 
 // ── Continue Watching ─────────────────────────────────────────
 async function loadContinueWatching() {
+  if (!prefs.show_continue_watching) return;
   try {
     // Filter server-side: asking for the plain history and dropping the
     // completed rows here means a page of recently-finished titles eats the
@@ -710,7 +717,9 @@ await ensureSessionQuietly();
 // Awaited, not fired alongside the loads below: it settles which provider is
 // active, and every card those loads render stamps that name into its link.
 // Racing it means the first paint can still produce provider-less links.
+const prefsReady = loadPreferences();
 await initProviders();
+prefs = await prefsReady;
 
 loadHome();
 loadContinueWatching();

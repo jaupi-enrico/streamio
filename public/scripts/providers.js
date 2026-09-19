@@ -1,5 +1,8 @@
 import { ensureSessionQuietly, fetchPublic } from "/scripts/auth.js";
 import { getName, groupFamilies } from "/scripts/provider-names.js";
+import { loadPreferences } from "/scripts/preferences.js";
+// Keeps the cached preferences current; site-wide ones (reduce motion) apply on import.
+loadPreferences();
 
 const KEY = "streamio.provider";
 let current = localStorage.getItem(KEY) || "";

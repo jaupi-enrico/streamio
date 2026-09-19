@@ -1,5 +1,8 @@
 import { api, getAccessToken, getSelfId, escapeHtml } from "/scripts/auth.js";
 import { ICON_CROWN } from "/scripts/icons.js";
+import { loadPreferences } from "/scripts/preferences.js";
+// Keeps the cached preferences current; site-wide ones (reduce motion) apply on import.
+loadPreferences();
 
 function watchUrl(room) {
   const params = new URLSearchParams({ id: room.state.showId, room: room.code });

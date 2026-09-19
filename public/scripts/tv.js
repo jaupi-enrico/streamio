@@ -6,6 +6,8 @@
 // here, never anything this page sends.
 
 import { api, apiFetch, escapeHtml } from '/scripts/auth.js';
+// Applies the saved display/accessibility preferences to this page too.
+import "/scripts/preferences.js";
 
 const panels = {
   loading: document.getElementById('panelLoading'),

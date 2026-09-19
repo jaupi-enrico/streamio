@@ -19,6 +19,7 @@ import {
   STAT_LABELS,
 } from "/scripts/show-meta.js";
 import { RoomConnection, roomInviteUrl } from "/scripts/room-sync.js";
+import { getPreferences, loadPreferences } from "/scripts/preferences.js";
 // See the note in details.js: `providerName` is a registry slug, not a label.
 import { getName as providerLabel } from "/scripts/provider-names.js";
 import {
@@ -44,7 +45,11 @@ let currentShowData = null;
 let currentServers = [];
 let currentEpisodesList = [];
 let currentEpisodeIndex = -1;
-let autoplayNextEnabled = true;
+// The account's common preferences (preferences.js). Seeded from the local
+// cache so nothing reads undefined; replaced by the server's copy before the
+// page loads its first title.
+let prefs = getPreferences();
+let autoplayNextEnabled = prefs.autoplay;
 let currentPlaybackId = "";
 let currentPlaybackType = "episode";
 let currentHls = null;
@@ -338,6 +343,11 @@ function showSkipSegment(match) {
   document.getElementById("skipSegmentBtn").textContent =
     SKIP_SEGMENT_LABELS[match.type] || "Skip";
   document.getElementById("skipSegmentPrompt").classList.add("show");
+  // Credits and previews are left to the button: skipping them ends the
+  // episode, which is the autoplay preference's decision, not this one's.
+  if (prefs.auto_skip_intro && (match.type === "intro" || match.type === "recap")) {
+    document.getElementById("skipSegmentBtn").click();
+  }
 }
 
 function hideSkipSegment() {
@@ -1082,15 +1092,19 @@ const PLAYER_SHORTCUTS = [
     group: "Seeking",
     keys: ["←"],
     combo: ["ArrowLeft"],
-    label: "Back 5 seconds",
-    run: () => playerSeekBy(-5),
+    get label() {
+      return `Back ${prefs.seek_step} seconds`;
+    },
+    run: () => playerSeekBy(-prefs.seek_step),
   },
   {
     group: "Seeking",
     keys: ["→"],
     combo: ["ArrowRight"],
-    label: "Forward 5 seconds",
-    run: () => playerSeekBy(5),
+    get label() {
+      return `Forward ${prefs.seek_step} seconds`;
+    },
+    run: () => playerSeekBy(prefs.seek_step),
   },
   {
     group: "Seeking",
@@ -1509,6 +1523,9 @@ function initPlayerControls() {
 
     const shortcut = findShortcut(e);
     if (!shortcut) return;
+    // Single-key shortcuts can collide with screen readers and voice control
+    // (WCAG 2.1.4), so they can be turned off — all but Esc and the help list.
+    if (!prefs.keyboard_shortcuts && !shortcut.anytime) return;
     // Everything but Esc and the help list needs a player on screen — while
     // casting the local element is hidden and the cast panel owns playback.
     if (!shortcut.anytime && getPlayer().style.display === "none") return;
@@ -1521,7 +1538,9 @@ function initPlayerControls() {
     lastKeyAt = now;
 
     shortcut.run(e);
-    showControlsUI();
+    // A seek already confirms itself through the OSD; whether it should also
+    // bring up the whole control bar is the viewer's call.
+    if (shortcut.group !== "Seeking" || prefs.controls_on_seek) showControlsUI();
   });
 
   // Picture-in-Picture
@@ -1532,7 +1551,8 @@ function initPlayerControls() {
   // "hovering" the container forever, so CSS :hover alone never hides them) ──
   const playerContainer = document.getElementById("playerContainer");
   const playerControls = document.getElementById("playerControls");
-  const CONTROLS_HIDE_DELAY = 3000;
+  // 0 = never hide while playing, for viewers who need longer to reach a button.
+  const controlsHideDelay = () => prefs.controls_timeout * 1000;
   // Touch devices have no real hover state — mouseenter/mouseleave fire at
   // most once per tap (if at all), so hover-tracking logic below is skipped
   // for them in favor of an explicit tap-to-toggle handler.
@@ -1545,11 +1565,12 @@ function initPlayerControls() {
   function showControlsUI() {
     playerContainer.classList.add("show-controls");
     clearTimeout(controlsHideTimer);
+    if (!controlsHideDelay()) return;
     controlsHideTimer = setTimeout(() => {
       if (!player.paused && !pointerOverControls) {
         playerContainer.classList.remove("show-controls");
       }
-    }, CONTROLS_HIDE_DELAY);
+    }, controlsHideDelay());
   }
 
   function hideControlsUI() {
@@ -1574,17 +1595,26 @@ function initPlayerControls() {
       e.preventDefault();
       playerToggleFullscreen();
     });
-    playerContainer.addEventListener("mousemove", showControlsUI);
-    playerContainer.addEventListener("mouseenter", showControlsUI);
-    playerContainer.addEventListener("mouseleave", () => {
-      clearTimeout(controlsHideTimer);
-      if (!player.paused) playerContainer.classList.remove("show-controls");
-    });
-    playerControls.addEventListener("mouseenter", () => {
-      pointerOverControls = true;
+    // Whether the pointer rests on the controls is re-read off every move's own
+    // target, not tracked with mouseenter/mouseleave on the bar: clicking the
+    // fullscreen button (which sits on the bar) and then going fullscreen moves
+    // the bar out from under a cursor that never moved, no mouseleave arrives,
+    // and the flag stayed true — the bar never hid again. The bar's own box is
+    // excluded too, since its transparent gradient padding reaches well above
+    // the buttons.
+    playerContainer.addEventListener("mousemove", (e) => {
+      pointerOverControls =
+        e.target !== playerControls && playerControls.contains(e.target);
       showControlsUI();
     });
-    playerControls.addEventListener("mouseleave", () => {
+    playerContainer.addEventListener("mouseenter", showControlsUI);
+    playerContainer.addEventListener("mouseleave", () => {
+      pointerOverControls = false;
+      clearTimeout(controlsHideTimer);
+      if (!player.paused && controlsHideDelay())
+        playerContainer.classList.remove("show-controls");
+    });
+    document.addEventListener("fullscreenchange", () => {
       pointerOverControls = false;
       showControlsUI();
     });
@@ -2270,6 +2300,47 @@ function updateSubtitleStyle(activeIdx, isHls = false) {
   }
 }
 
+/**
+ * Which subtitle track a new stream starts on, per the viewer's preferences:
+ * -1 when subtitles are off, else the first track in the preferred language,
+ * else `fallback` (the first track, or whatever the manifest marked default).
+ */
+function preferredSubtitleIndex(langs, fallback = 0) {
+  if (!prefs.subtitles) return -1;
+  const want = prefs.preferred_lang;
+  if (want) {
+    const idx = langs.findIndex((l) =>
+      String(l || "").toLowerCase().startsWith(want),
+    );
+    if (idx >= 0) return idx;
+  }
+  return fallback;
+}
+
+/**
+ * Pins the starting rendition when the viewer asked for one. "auto" leaves
+ * hls.js's ABR alone; a height picks the tallest level not above it (or the
+ * shortest one, if every level is taller).
+ */
+function applyDefaultQuality() {
+  const want = prefs.default_quality;
+  const levels = currentHls?.levels || [];
+  if (want === "auto" || levels.length < 2) return;
+  let best = -1;
+  levels.forEach((l, i) => {
+    const h = l.height || 0;
+    const fits = want === "highest" || h <= Number(want);
+    if (fits && (best === -1 || h > (levels[best].height || 0))) best = i;
+  });
+  if (best === -1) {
+    best = levels.reduce(
+      (min, l, i) => ((l.height || 0) < (levels[min].height || 0) ? i : min),
+      0,
+    );
+  }
+  currentHls.currentLevel = best;
+}
+
 // Seeks to a shared clip's start time (once per page load) if the URL asked
 // for one; otherwise falls back to resuming from watch history as before.
 async function applyStartPosition(player) {
@@ -2278,6 +2349,7 @@ async function applyStartPosition(player) {
     player.currentTime = deepLinkTimeSeconds;
     return;
   }
+  if (!prefs.resume_playback) return;
   const resume = await resumeProgress(currentPlaybackId, currentPlaybackType);
   if (resume) player.currentTime = resume;
 }
@@ -2322,8 +2394,13 @@ function playResolvedStream(stream) {
   clearSubtitleTracks();
   const subs = stream?.subtitles || stream?.captions || [];
   if (Array.isArray(subs) && subs.length) {
-    subs.forEach((s, i) => addSubtitleTrack(s, i === 0));
+    const shown = preferredSubtitleIndex(subs.map((s) => s.lang));
+    subs.forEach((s, i) => addSubtitleTrack(s, i === shown));
   }
+  // Each new source resets the element to defaultPlaybackRate, so the
+  // preferred speed applies per stream and a mid-episode change doesn't stick.
+  player.defaultPlaybackRate = prefs.playback_speed;
+  player.playbackRate = prefs.playback_speed;
 
   const headers =
     stream?.headers && typeof stream.headers === "object" ? stream.headers : {};
@@ -2381,6 +2458,7 @@ function playResolvedStream(stream) {
     // stall tolerances — the opposite of what a high-latency hop needs.
     currentHls = new Hls({
       enableWorker: true,
+      subtitleDisplay: prefs.subtitles,
       // Build a deeper cushion (default 30s) so one slow fragment is absorbed
       // instead of starving the playhead.
       maxBufferLength: 60,
@@ -2418,8 +2496,10 @@ function playResolvedStream(stream) {
     });
     currentHls.loadSource(url);
     currentHls.attachMedia(player);
+    let hlsSubtitlePrefApplied = false;
     currentHls.on(Hls.Events.MANIFEST_PARSED, async () => {
       streamRetryCount = 0;
+      applyDefaultQuality();
       updateQualityMenu();
       updateSubtitleMenu();
       player.play().catch(() => {});
@@ -2430,7 +2510,19 @@ function playResolvedStream(stream) {
     // rendition ABR settled on — both need the menu redrawn.
     currentHls.on(Hls.Events.LEVEL_SWITCHED, updateQualityStyle);
     currentHls.on(Hls.Events.LEVELS_UPDATED, updateQualityMenu);
-    currentHls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, updateSubtitleMenu);
+    currentHls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
+      // Once per stream: after that the choice is the viewer's, from the menu.
+      if (!hlsSubtitlePrefApplied && currentHls.subtitleTracks.length) {
+        hlsSubtitlePrefApplied = true;
+        const idx = preferredSubtitleIndex(
+          currentHls.subtitleTracks.map((t) => t.lang),
+          currentHls.subtitleTrack,
+        );
+        currentHls.subtitleTrack = idx;
+        if (idx >= 0) currentHls.subtitleDisplay = true;
+      }
+      updateSubtitleMenu();
+    });
     currentHls.on(Hls.Events.ERROR, (_, d) => {
       console.error("HLS error", d);
       if (d.fatal) retryCurrentStream();
@@ -3929,8 +4021,12 @@ function renderEpisodeCard(ep) {
   const label = `S${ep.seasonNum}E${ep.episodeNum}`;
   const title = episodeTitle(ep);
   const badges = episodeBadges(ep);
+  // Episodes not yet started keep only their number and title when the viewer
+  // asked to be spared spoilers.
+  const spoilerFree = prefs.hide_spoilers && !episodeStateClass(ep.id);
+  const overview = spoilerFree ? "" : ep.overview;
 
-  const thumb = ep.poster
+  const thumb = ep.poster && !spoilerFree
     ? `<img class="epcard-thumb-img" src="${escapeHtml(ep.poster)}" alt="" loading="lazy" onerror="this.remove()">`
     : `<span class="epcard-thumb-num">${escapeHtml(String(ep.episodeNum))}</span>`;
 
@@ -3943,7 +4039,7 @@ function renderEpisodeCard(ep) {
         <span class="epbtn-label">${escapeHtml(label)}</span>
         ${title ? `<span class="epcard-title">${escapeHtml(title)}</span>` : ""}
         ${badges.length ? `<span class="epcard-badges">${escapeHtml(badges.join(" · "))}</span>` : ""}
-        ${ep.overview ? `<span class="epcard-overview">${escapeHtml(ep.overview)}</span>` : ""}
+        ${overview ? `<span class="epcard-overview">${escapeHtml(overview)}</span>` : ""}
       </span>
       <span class="epbtn-progress"></span>
     </button>`;
@@ -4223,7 +4319,11 @@ async function renderEpisodes() {
     showPlayerMessage("Select an episode");
     initEpisodeNav();
     // Long runs open as a dense number grid; the cards are one click away.
-    episodeView.compact = episodes.length > COMPACT_THRESHOLD;
+    // An explicit layout preference overrides that.
+    episodeView.compact =
+      prefs.episode_layout === "auto"
+        ? episodes.length > COMPACT_THRESHOLD
+        : prefs.episode_layout === "compact";
     episodeView.seasonId = "all";
     episodeView.query = "";
     renderEpisodeGrid();
@@ -4420,5 +4520,7 @@ setupRoomPlaybackHooks();
 // Playback of an 18+ title depends on the viewer's preference, so the server
 // has to know who is asking before the first content request goes out.
 await ensureSessionQuietly();
+prefs = await loadPreferences();
+autoplayNextEnabled = prefs.autoplay;
 
 loadWatchPage();

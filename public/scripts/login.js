@@ -1,4 +1,6 @@
 import { saveAccessToken } from '/scripts/auth.js';
+// Applies the saved display/accessibility preferences to this page too.
+import "/scripts/preferences.js";
 
 // `?redirect=` is read straight out of the address bar and handed to
 // `window.location`, which makes it a navigation sink in two ways: a

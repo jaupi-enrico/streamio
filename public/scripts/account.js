@@ -1,6 +1,7 @@
 import { api, apiFetch, logout, escapeHtml, parseShowKey } from '/scripts/auth.js';
 import { renderReactionBar, attachReactionHandlers, initShareBadge, refreshShareBadge } from '/scripts/social.js';
 import { getName as providerLabel } from '/scripts/provider-names.js';
+import { PREFERENCE_GROUPS, readPreferences, isCommonPreference, cachePreference } from '/scripts/preferences.js';
 import { ICON_ALERT, ICON_FILM, ICON_BOOKMARK, ICON_CLOCK, ICON_SETTINGS, ICON_MAIL, ICON_GLOBE, ICON_CHECK_CIRCLE, ICON_X_CIRCLE, ICON_LOADER } from '/scripts/icons.js';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -808,11 +809,10 @@ $('clearHistoryBtn').addEventListener('click', async () => {
 });
 
 // ── Preferences ───────────────────────────────────────────────
+// The common preferences (their labels, controls and defaults) live in
+// preferences.js, shared with the pages that act on them. Anything else in
+// user_preferences is listed under "Custom" as a raw key/value pair.
 const PREF_META = {
-  autoplay:        { desc: 'Automatically play the next episode' },
-  subtitles:       { desc: 'Show subtitles by default' },
-  preferred_lang:  { desc: 'Preferred audio/subtitle language' },
-  default_quality: { desc: 'Default video quality selection' },
   notifications:   { desc: 'Receive email notifications' },
 };
 
@@ -846,14 +846,110 @@ async function loadPreferences() {
   }
 }
 
+async function savePreference(key, value) {
+  await api(`/api/account/preferences/${encodeURIComponent(key)}`, {
+    method: 'PUT', body: { value },
+  });
+  cachePreference(key, value);
+}
+
+/** One card per group of common preferences, built as DOM. */
+function renderCommonPreferences(raw) {
+  const values = readPreferences(raw);
+  const wrap = document.createElement('div');
+  wrap.className = 'pref-groups';
+
+  for (const group of PREFERENCE_GROUPS) {
+    const heading = document.createElement('div');
+    heading.className = 'pref-group-title';
+    heading.textContent = group.title;
+    const grid = document.createElement('div');
+    grid.className = 'pref-grid';
+
+    for (const item of group.items) {
+      const row = document.createElement('div');
+      row.className = 'pref-row';
+      const info = document.createElement('div');
+      info.className = 'pref-info';
+      const label = document.createElement('div');
+      label.className = 'pref-key';
+      label.textContent = item.label;
+      info.appendChild(label);
+      if (item.desc) {
+        const desc = document.createElement('div');
+        desc.className = 'pref-desc';
+        desc.textContent = item.desc;
+        info.appendChild(desc);
+      }
+      row.appendChild(info);
+
+      if (item.type === 'bool') {
+        const toggle = document.createElement('label');
+        toggle.className = 'toggle';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = values[item.key];
+        input.setAttribute('aria-label', item.label);
+        const slider = document.createElement('span');
+        slider.className = 'toggle-slider';
+        toggle.append(input, slider);
+        input.addEventListener('change', async () => {
+          try {
+            await savePreference(item.key, input.checked);
+            toast('Preference saved.');
+          } catch (err) { toast(err.message, 'error'); input.checked = !input.checked; }
+        });
+        row.appendChild(toggle);
+      } else {
+        // Option values can be numbers, so the <option> carries its index and
+        // the typed value is looked up from the definition.
+        const select = document.createElement('select');
+        select.className = 'field-input pref-select';
+        select.setAttribute('aria-label', item.label);
+        item.options.forEach((opt, i) => {
+          const o = document.createElement('option');
+          o.value = String(i);
+          o.textContent = opt.label;
+          if (opt.value === values[item.key]) o.selected = true;
+          select.appendChild(o);
+        });
+        let previous = select.value;
+        select.addEventListener('change', async () => {
+          const value = item.options[Number(select.value)].value;
+          try {
+            await savePreference(item.key, value);
+            previous = select.value;
+            toast('Preference saved.');
+          } catch (err) { toast(err.message, 'error'); select.value = previous; }
+        });
+        row.appendChild(select);
+      }
+      grid.appendChild(row);
+    }
+    wrap.append(heading, grid);
+  }
+  return wrap;
+}
+
 function renderPreferences(prefs) {
-  const keys = Object.keys(prefs);
+  const host = $('prefsContent');
+  host.innerHTML = '';
+  host.appendChild(renderCommonPreferences(prefs));
+
+  const customTitle = document.createElement('div');
+  customTitle.className = 'pref-group-title';
+  customTitle.textContent = 'Custom';
+  const custom = document.createElement('div');
+  custom.id = 'customPrefs';
+  host.append(customTitle, custom);
+
+  const keys = Object.keys(prefs).filter(key => !isCommonPreference(key));
   if (!keys.length) {
-    $('prefsContent').innerHTML = `
-      <div class="empty">
+    custom.innerHTML = `
+      <div class="empty empty-compact">
         <div class="empty-icon">${ICON_SETTINGS}</div>
-        <h3>No Preferences Set</h3>
-        <p>Use the button above to add custom preferences.</p>
+        <h3>No Custom Preferences</h3>
+        <p>Use “+ Add Custom” above to store your own key/value pairs.</p>
       </div>`;
     return;
   }
@@ -879,22 +975,20 @@ function renderPreferences(prefs) {
         </div>`}
     </div>`;
   }).join('')}</div>`;
-  $('prefsContent').innerHTML = html;
+  custom.innerHTML = html;
 
   // Toggle handlers
-  document.querySelectorAll('.pref-toggle').forEach(toggle => {
+  custom.querySelectorAll('.pref-toggle').forEach(toggle => {
     toggle.addEventListener('change', async e => {
       try {
-        await api(`/api/account/preferences/${e.target.dataset.prefKey}`, {
-          method: 'PUT', body: { value: e.target.checked }
-        });
+        await savePreference(e.target.dataset.prefKey, e.target.checked);
         toast('Preference saved.');
       } catch (err) { toast(err.message, 'error'); e.target.checked = !e.target.checked; }
     });
   });
 
   // Edit
-  document.querySelectorAll('[data-edit-pref]').forEach(btn => {
+  custom.querySelectorAll('[data-edit-pref]').forEach(btn => {
     btn.addEventListener('click', () => {
       $('prefModalTitle').textContent = 'Edit Preference';
       $('prefKeyInput').value = btn.dataset.editPref;
@@ -905,11 +999,12 @@ function renderPreferences(prefs) {
   });
 
   // Delete
-  document.querySelectorAll('[data-delete-pref]').forEach(btn => {
+  custom.querySelectorAll('[data-delete-pref]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const key = btn.dataset.deletePref;
       try {
-        await api(`/api/account/preferences/${key}`, { method: 'DELETE' });
+        await api(`/api/account/preferences/${encodeURIComponent(key)}`, { method: 'DELETE' });
+        cachePreference(key, undefined);
         toast(`Preference "${key}" removed.`);
         loadPreferences();
       } catch (err) { toast(err.message, 'error'); }
@@ -1228,7 +1323,7 @@ $('savePrefBtn').addEventListener('click', async () => {
   let value;
   try { value = JSON.parse(rawVal); } catch { value = rawVal; }
   try {
-    await api(`/api/account/preferences/${key}`, { method: 'PUT', body: { value } });
+    await savePreference(key, value);
     toast(`Preference "${key}" saved.`);
     closeModal('prefModal');
     loadPreferences();

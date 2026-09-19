@@ -346,6 +346,20 @@ renders as chips and the details page as table rows. Both read `item.details` (`
 is dropped, not filled with `—`; that dash was on nearly every catalogue card because the meta
 line only ever looked at `runtime`/`genres`, which no listing sets.
 
+`preferences.js` owns the **common preferences** (Account → Preferences, grouped: playback,
+browsing, privacy, accessibility): their keys, labels, controls and defaults. They are ordinary
+`user_preferences` rows — the same generic `/api/account/preferences/:key` store the tab's
+"Custom" list edits — so adding one needs no backend change. **Every default must equal what the
+site did before that preference existed**, so an untouched account and a logged-out visitor see no
+change. Values are cached in `localStorage` (`streamio.prefs`, cleared on logout) so a page can
+apply them before its fetch lands; `readPreferences` coerces free-form JSON to each preference's
+type and falls back to the default. Display/accessibility ones (text size, readable font, high
+contrast, underlined links, focus highlight, reduce motion, subtitle size/style) are one stylesheet
+`preferences.js` generates and injects on import, so **every page script imports it** — a page
+that doesn't simply ignores them. Pages size text in rem, which is what makes the text-size scale
+work; a hard-coded `px` font size opts that element out. The one server-enforced key is `share_privacy`, checked in
+`ShareService.createShare` (403) so the app and direct API calls are held to it too.
+
 `watch.js`'s `playResolvedStream`/`buildPlayableUrl` load `payload.playlistUrl` into hls.js via
 `proxyInsecureSource` first. `needsSourceProxy` routes a URL through `/api/cast-proxy` whenever
 it's plain `http://` on an https page (mixed content) or the resolved payload carries `headers`

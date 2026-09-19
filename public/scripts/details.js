@@ -6,6 +6,7 @@ import {
   escapeHtml,
 } from "/scripts/auth.js";
 import { openShareModal, initShareBadge } from "/scripts/social.js";
+import { loadPreferences } from "/scripts/preferences.js";
 // `providerName` on an item is the provider's registry slug ("local"), so it
 // is labelled through the shared display-name map rather than printed raw. It
 // has to be a slug: it is the same string a client sends back as `?provider=`.
@@ -20,6 +21,8 @@ import {
   ageLabel,
   STAT_LABELS,
 } from "/scripts/show-meta.js";
+// Keeps the cached preferences current; site-wide ones (reduce motion) apply on import.
+loadPreferences();
 
 // ── Stato watchlist ─────────────────────────────────────────
 let wlProvider = "";

@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { ALLOWED_REACTIONS, isAllowedReaction, ShareService } from "../services/share.service.js";
+import { ALLOWED_REACTIONS, isAllowedReaction, ShareService, RecipientRefusesSharesError } from "../services/share.service.js";
 import { requireAuth } from "../auth/middleware.js";
 import { apiLimiter, shareLimiter } from "../auth/rateLimit.js";
 import type { Redis } from "../database/redis.js";
@@ -67,6 +67,13 @@ export function createShareRouter(db: Database, redis: Redis): Router {
     } catch (err: any) {
       if (err.message === "NO_RECIPIENTS") {
         res.status(400).json({ error: "You must include at least one recipient other than yourself." });
+        return;
+      }
+      if (err instanceof RecipientRefusesSharesError) {
+        res.status(403).json({
+          error: `${err.names.join(", ")} ${err.names.length === 1 ? "doesn't" : "don't"} accept shares from you.`,
+          reason: "RECIPIENT_REFUSES_SHARES",
+        });
         return;
       }
       if (err.message === "RECIPIENT_NOT_FOUND") {

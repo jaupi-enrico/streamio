@@ -1,5 +1,7 @@
 import { api, logout, escapeHtml, getAccessToken, refreshAccessToken } from '/scripts/auth.js';
 import { ICON_ALERT, ICON_FILM } from '/scripts/icons.js';
+// Applies the saved display/accessibility preferences to this page too.
+import "/scripts/preferences.js";
 
 const BASE = '/api/admin/local-provider';
 const $ = id => document.getElementById(id);

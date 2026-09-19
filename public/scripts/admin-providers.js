@@ -1,6 +1,8 @@
 import { api, logout } from '/scripts/auth.js';
 import { groupFamilies, getLanguageLabel } from '/scripts/provider-names.js';
 import { ICON_ALERT, ICON_RADIO } from '/scripts/icons.js';
+// Applies the saved display/accessibility preferences to this page too.
+import "/scripts/preferences.js";
 
 const $ = id => document.getElementById(id);
 let toastTimer;

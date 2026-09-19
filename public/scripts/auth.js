@@ -205,6 +205,8 @@ export async function logout() {
     credentials: "include",
   }).catch(() => {});
   clearAccessToken();
+  // Cached preferences (preferences.js) belong to the account signing out.
+  try { localStorage.removeItem("streamio.prefs"); } catch {}
   window.location.href = "/login";
 }
 

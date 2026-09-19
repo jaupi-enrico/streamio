@@ -1,5 +1,8 @@
 import { ensureSessionQuietly, fetchPublic, escapeHtml } from '/scripts/auth.js';
 import { showMeta, isSeries } from '/scripts/show-meta.js';
+import { loadPreferences } from '/scripts/preferences.js';
+// Keeps the cached preferences current; site-wide ones (reduce motion) apply on import.
+loadPreferences();
 
 const providerStorageKey = 'streamio.provider';
 

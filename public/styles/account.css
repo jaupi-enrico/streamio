@@ -511,6 +511,17 @@ nav {
     text-overflow: ellipsis; white-space: nowrap;
 }
 .pref-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.pref-group-title {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted2);
+    margin: 22px 0 10px;
+}
+.pref-groups > .pref-group-title:first-child { margin-top: 0; }
+.pref-row .pref-select { width: auto; min-width: 160px; flex-shrink: 0; }
+.empty.empty-compact { padding: 28px 20px; }
+@media (max-width: 600px) {
+    .pref-row .pref-select { min-width: 0; max-width: 45%; }
+}
 
 /* Toggle */
 .toggle {
