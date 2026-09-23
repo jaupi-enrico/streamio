@@ -115,6 +115,24 @@ check("the browser's normalizer agrees with the server's", () => {
   }
 });
 
+check("the React frontend's normalizer agrees with the server's", () => {
+  // Same drift, third copy: frontend/ is built alongside public/ during the
+  // migration, and both TV pages are live at once.
+  const ts = readFileSync(new URL("../frontend/src/pages/tv/device-code.ts", import.meta.url), "utf8");
+  const match = ts.match(/export const ALPHABET = "([^"]+)"/);
+  assert(match, "could not find ALPHABET in frontend/src/pages/tv/device-code.ts");
+
+  const seen = new Set();
+  for (let i = 0; i < 5000; i++) {
+    for (const ch of generateUserCode().replace("-", "")) seen.add(ch);
+  }
+
+  const browser = new Set(match[1]);
+  for (const ch of seen) {
+    assert(browser.has(ch), `server emits '${ch}', which device-code.ts would strip out`);
+  }
+});
+
 console.log("device codes");
 
 check("are long, random and never equal", () => {

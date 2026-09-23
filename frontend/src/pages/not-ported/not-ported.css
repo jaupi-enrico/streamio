@@ -1,0 +1,7 @@
+body { font-family: 'DM Sans', sans-serif; background: #141414; color: #fff; margin: 0; }
+.np-main { max-width: 36rem; margin: 6rem auto; padding: 0 1.25rem; }
+.np-main h1 { font-family: 'Bebas Neue', sans-serif; font-size: 2.4rem; letter-spacing: 0.04em; font-weight: 400; margin: 0 0 1rem; }
+.np-main p { color: #b3b3b3; line-height: 1.6; margin: 0 0 0.75rem; }
+.np-main code { color: #fff; }
+.np-main a { color: #e50914; font-weight: 600; text-decoration: none; }
+.np-main a:hover { text-decoration: underline; }

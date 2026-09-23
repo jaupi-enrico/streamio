@@ -6,6 +6,7 @@ import { UnknownProviderError, ProviderDisabledError, ProviderTimeoutError } fro
 import { createContentRouter } from "./routes/content.router.js";
 import { createHealthRouter } from "./routes/health.router.js";
 import { createPublicRouter } from "./routes/public.router.js";
+import { createPreviewRouter } from "./routes/preview.router.js";
 import { createProviderRouter } from "./routes/provider.router.js";
 import { createAuthRouter } from "./routes/auth.router.js";
 import { createAccountRouter } from "./routes/account.router.js";
@@ -218,6 +219,9 @@ export class WebServer {
         },
       }),
     );
+    // The React frontend, side by side with the vanilla pages above it until
+    // each page is switched over (frontend/, routes/preview.router.ts).
+    this.app.use("/preview",       createPreviewRouter(this.redis, this.platformHandler));
     this.app.use("/",              createPublicRouter(this.redis));
     this.app.use("/health",        createHealthRouter());
     this.app.use("/api/version",   createVersionRouter(this.db, this.redis));

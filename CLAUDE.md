@@ -42,6 +42,14 @@ Run from repo root (`web/`) unless noted.
 
 No dev-server hot-reload from TS source; compile before `dev`/`start` pick up changes.
 
+React frontend (`frontend/`, being migrated alongside `public/` — see "Frontend (`frontend/`)"):
+`npm run build` also builds it into `dist/frontend`; `npm run typecheck:frontend` (strict, not
+covered by the root `npx tsc --noEmit`); `npm run dev:frontend` (Vite on :5173, `/preview/*` hot
+reloaded, everything else proxied to Express on :8080 — run it next to `watch` + `dev`);
+`npm run test:frontend` (vitest) and `npm run test:frontend-parity` (the vanilla helpers vs their
+ports). The frontend imports the backend's types from `dist/*.d.ts`, so build the backend once
+before type-checking it on a fresh clone.
+
 Server start applies pending DB migrations first — no separate migrate command, no running
 against a stale schema. `npm run release` (`scripts/release.sh`) bumps/commits/tags/pushes and
 publishes a GitHub Release via `gh`; see `docs/UPDATES.md`/`docs/CHEATSHEET.md`.
@@ -388,6 +396,38 @@ sink** — display names, avatar URLs, share messages. These pages keep the acce
 share inbox is a zero-click token steal against whoever *looks* at it. Prefer `textContent`/DOM
 construction where there's a choice; `renderHero`'s avatar is built as DOM because its fallback
 was an inline `onerror` with a user string interpolated into it.
+
+### Frontend (`frontend/`) — React migration in progress
+
+React 19 + Vite + strict TS + React Router + TanStack Query, built **next to** `public/`, which
+stays the live site and must not be edited as part of the migration. Served at `/preview/*`
+(`routes/preview.router.ts`, 404 until built) so each page can be compared side by side with its
+vanilla original; same origin, so one session and the same localStorage keys serve both. Nothing
+switches over without explicit approval (planned: a `REACT_PAGES` list read by
+`public.router.ts`, reverted by removing the entry).
+
+- **Mount from the server, prefix from the browser.** `routes/frontend-app.ts` renders the built
+  `index.html` with an inline boot script that writes `window.__STREAMIO_CONFIG__` and a
+  `<base href>`; the bundle is built with a relative base. The prefix is whatever the browser's
+  pathname has in front of the path the server received — **not** `APP_URL`, which on a
+  tunnel/redirect install names `https://host/streamio` while the browser is 302'd to the
+  tunnel's root (a `/streamio/...` asset URL there 404s and the page renders blank). Every URL in the app goes through `lib/base.ts`
+  (`apiUrl`, `wsUrl`, …) — unlike `public/`, nothing is root-relative, so path-prefixed installs
+  work. Links go through `<AppLink>`/`pageHref()`: in-app when the page is ported
+  (`lib/pages.ts` `IMPLEMENTED_PAGES` + `routes.tsx`, which must agree), the vanilla page otherwise.
+- **Page CSS is copied verbatim** into `src/pages/<scope>/` and scoped at build time to
+  `:root[data-page="<scope>"]` (`build/scope-page-css.ts`, keyframes renamed per page);
+  `usePageScope()` sets the attribute. Class names match the vanilla DOM. `#root` is
+  `display: contents` because the vanilla pages lay out `<body>`'s own children.
+- **`lib/auth.ts`, `lib/preferences.ts`, `lib/show-meta.ts`, `lib/provider-names.ts` are ports**
+  of the vanilla helpers and must stay behaviourally identical while both live —
+  `src/lib/parity.test.ts` loads the originals and compares. Preferences are applied in `main.tsx`
+  before React renders; the high-contrast rule also matches `:root.high-contrast[data-page]` to beat
+  the scoped palettes.
+- GETs go through `usePublicQuery`/`useAuthedQuery` (`lib/api.ts`). `POST
+  /api/episodes/:id/video` is never a query — resolved streams are not cached client-side.
+- Other accounts' strings render as JSX text; no `dangerouslySetInnerHTML` with user content
+  (icons are generated JSX components for that reason).
 
 ### Versioning and updates
 

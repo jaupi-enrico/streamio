@@ -1,0 +1,42 @@
+/* Not a page stylesheet: lives outside src/pages, so it is not scoped and
+   applies on every route. Own class prefix so it can't meet page rules. */
+.sp-preview-banner {
+  position: fixed;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.45rem 0.35rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  font: 500 0.75rem/1 "DM Sans", system-ui, sans-serif;
+  color: #fff;
+}
+.sp-preview-tag {
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: #e50914;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+}
+.sp-preview-banner a { color: #fff; text-decoration: none; }
+.sp-preview-banner a:hover { text-decoration: underline; }
+.sp-preview-banner button {
+  background: none;
+  border: none;
+  color: #b3b3b3;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.35rem;
+}
+.sp-preview-banner button:hover { color: #fff; }
+/* Clear the mobile bottom nav. */
+@media (max-width: 768px) {
+  .sp-preview-banner { bottom: 4.75rem; }
+}
