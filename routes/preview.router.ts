@@ -1,6 +1,9 @@
 import path from "node:path";
 import express, { Router } from "express";
+import { isAdminEmail } from "../auth/middleware.js";
+import { hashRefreshToken } from "../auth/jwt.js";
 import { publicLimiter } from "../auth/rateLimit.js";
+import type { Database } from "../database/db.js";
 import type { Redis } from "../database/redis.js";
 import type { WebPlatformHandler } from "../PlatformHandler.js";
 import { FRONTEND_DIR, frontendBuilt, renderAppIndex } from "./frontend-app.js";
@@ -16,8 +19,33 @@ import { createDetailsOgRenderer } from "./og-meta.js";
  *
  * Absent (404) until `npm run build` has produced dist/frontend.
  */
-export function createPreviewRouter(redis: Redis, platformHandler: WebPlatformHandler) {
+export function createPreviewRouter(db: Database, redis: Redis, platformHandler: WebPlatformHandler) {
   const router = Router();
+
+  /**
+   * The page document is admin-only. A browser navigation carries no Bearer
+   * token, so this reads the refresh cookie instead — looked up read-only (no
+   * rotation, so it can't race the client's own refresh) and held to the same
+   * bar as `createRequireAdmin`: the user row's email is in ADMIN_EMAILS and
+   * verified. Assets stay open; the bundle is useless without the shell, and
+   * a database round trip per file isn't worth it.
+   */
+  async function isAdminSession(req: express.Request): Promise<boolean> {
+    const raw = req.cookies?.refresh_token;
+    if (typeof raw !== "string" || !raw) return false;
+    try {
+      const row = await db.one<{ email: string; email_verified: boolean }>(
+        `SELECT u.email, u.email_verified
+           FROM refresh_tokens rt JOIN users u ON u.id = rt.user_id
+          WHERE rt.token_hash = $1 AND NOT rt.revoked AND rt.expires_at > NOW()`,
+        [hashRefreshToken(raw)],
+      );
+      return !!row && row.email_verified && isAdminEmail(row.email);
+    } catch (err) {
+      console.error("[preview] session check failed:", err);
+      return false;
+    }
+  }
   const detailsOgTags = createDetailsOgRenderer(platformHandler, redis);
   // Per route, not router.use — see the note in public.router.ts. Only the
   // HTML document counts against it; assets are static files.
@@ -56,6 +84,15 @@ export function createPreviewRouter(redis: Redis, platformHandler: WebPlatformHa
     // asset: answering it with the page would hand a script tag HTML.
     if (path.extname(req.path)) {
       res.status(404).end();
+      return;
+    }
+    if (!(await isAdminSession(req))) {
+      res.status(403).type("html").setHeader("Cache-Control", "no-store");
+      res.send(
+        `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+          `<title>Preview</title><body style="font:16px system-ui;padding:2rem;background:#111;color:#eee">` +
+          `<p>The preview is restricted to admins. <a style="color:#8cf" href="${req.baseUrl.replace(/\/preview$/, "")}/login">Sign in</a>, then reload.</p>`,
+      );
       return;
     }
     // Link previews for shared details pages; "" for anything else.

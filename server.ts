@@ -221,7 +221,7 @@ export class WebServer {
     );
     // The React frontend, side by side with the vanilla pages above it until
     // each page is switched over (frontend/, routes/preview.router.ts).
-    this.app.use("/preview",       createPreviewRouter(this.redis, this.platformHandler));
+    this.app.use("/preview",       createPreviewRouter(this.db, this.redis, this.platformHandler));
     this.app.use("/",              createPublicRouter(this.redis));
     this.app.use("/health",        createHealthRouter());
     this.app.use("/api/version",   createVersionRouter(this.db, this.redis));
