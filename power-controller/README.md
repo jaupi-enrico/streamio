@@ -36,6 +36,10 @@ service's `LOGIN_TOKEN`), this controller pings it before acting on an idle-trig
 someone is logged in, the shutdown is skipped for that poll. Manual/admin-triggered shutdown
 (`reason: "manual"`) is never gated by this — it's an explicit decision and always goes through.
 
+On Linux the controller also asks logind directly (`loginctl`) and skips an idle shutdown while any
+local Wayland/X11 session is open, with or without `login-checker`. This is a second, independent
+signal: if the beacon process dies mid-session, a present user is still seen.
+
 ## Running it continuously
 
 This process needs to keep running on the host across reboots (including after a WOL wake-up).

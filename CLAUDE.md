@@ -24,7 +24,12 @@ Run from repo root (`web/`) unless noted.
 
 - `npm run build` — compile TS to `dist/` · `npm run watch` — `tsc --watch`
 - `npm run dev` — run compiled server via nodemon (build/watch first; runs `dist/index.js`, not source)
-- `npm start` — run `dist/index.js` directly · `npm run stop` — kill running `node dist/index.js`
+- `npm start` — run `dist/index.js` directly · `npm run stop` — kill the `node dist/index.js`
+  started from this directory (matches on the process's cwd)
+- **Never `pkill -f "node dist/index.js"`** (or any pattern that broad) to stop a test server: the
+  host-side `login-checker` and `power-controller` run with that exact command line, and killing
+  `login-checker` makes `power-controller` think nobody is logged in and power the machine off.
+  Stop what you started by PID (`$!`) or by port (`fuser -k 8099/tcp`), or use `npm run stop`.
 - `npx tsc --noEmit` — type-check only, fastest correctness check
 - `npm run test:providers` — smoke test for the `local` provider (`tests/providers.test.mjs`):
   builds, then walks one movie and one show already in the database through
