@@ -26,6 +26,7 @@ import http from "node:http";
 import axios from "axios";
 import {
   BlockedUrlError,
+  HostResolutionError,
   assertFetchableUrl,
   assertObjectFetchable,
   clearHostCache,
@@ -33,6 +34,7 @@ import {
   isPrivateAddress,
   looksLikeUrl,
   parseHttpUrl,
+  resolvePublicAddresses,
   safeFetch,
 } from "../dist/core/utils/ssrf.js";
 
@@ -348,6 +350,79 @@ await check("a rebinding host never reaches the address it flips to", async () =
   } finally {
     dns.default.lookup = real;
   }
+});
+
+console.log("\nresolver failures");
+
+// A lookup that fails is not a lookup that was refused: Docker's embedded
+// resolver drops the odd query, and answering that with BlockedUrlError (a
+// 400 from the proxy) made the Cast receiver abandon a playing stream with
+// error 301. These pin the three halves of the fix.
+async function withFlakyDns(host, answer, fn) {
+  const dns = await import("node:dns/promises");
+  const real = dns.default.lookup;
+  const state = { lookups: 0 };
+  dns.default.lookup = async (name, opts) => {
+    if (name !== host) return real(name, opts);
+    state.lookups++;
+    const address = answer(state.lookups);
+    if (!address) throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
+    return opts?.all ? [{ address, family: 4 }] : { address, family: 4 };
+  };
+  clearHostCache();
+  try {
+    await fn(state);
+  } finally {
+    dns.default.lookup = real;
+    clearHostCache();
+  }
+}
+
+await check("a lookup that fails once is retried", async () => {
+  await withFlakyDns("flaky.invalid", (n) => (n === 1 ? null : "93.184.216.34"), async (state) => {
+    const addresses = await resolvePublicAddresses(new URL("http://flaky.invalid/"));
+    assert(addresses[0] === "93.184.216.34", `got ${addresses}`);
+    assert(state.lookups === 2, `resolved ${state.lookups} times`);
+  });
+});
+
+await check("a lookup that keeps failing is a HostResolutionError, not a block", async () => {
+  await withFlakyDns("dead.invalid", () => null, async () => {
+    let error = null;
+    try {
+      await resolvePublicAddresses(new URL("http://dead.invalid/"));
+    } catch (err) {
+      error = err;
+    }
+    assert(error instanceof HostResolutionError, `threw ${error?.name}`);
+    assert(!(error instanceof BlockedUrlError), "a resolver failure was reported as a block");
+  });
+});
+
+await check("a failed lookup falls back to the last validated answer", async () => {
+  const realNow = Date.now;
+  try {
+    await withFlakyDns("cdn.invalid", (n) => (n === 1 ? "93.184.216.34" : null), async () => {
+      await resolvePublicAddresses(new URL("http://cdn.invalid/"));
+      Date.now = () => realNow() + 60_000; // past the TTL, inside the stale window
+      const addresses = await resolvePublicAddresses(new URL("http://cdn.invalid/"));
+      assert(addresses[0] === "93.184.216.34", `got ${addresses}`);
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+await check("a private answer is still refused, flaky resolver or not", async () => {
+  await withFlakyDns("flip.invalid", (n) => (n === 1 ? null : "127.0.0.1"), async () => {
+    let error = null;
+    try {
+      await resolvePublicAddresses(new URL("http://flip.invalid/"));
+    } catch (err) {
+      error = err;
+    }
+    assert(error instanceof BlockedUrlError, `threw ${error?.name}`);
+  });
 });
 
 internal.close();

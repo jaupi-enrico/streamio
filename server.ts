@@ -184,7 +184,6 @@ export class WebServer {
   }
 
   private setupRoutes() {
-    this.app.use(express.static(path.join(process.cwd(), "public")));
     // Under /api deliberately, even though it serves files rather than JSON:
     // a reverse proxy in front of an install may only proxy /api/* and
     // 302-redirect everything else, and a 302 has no
@@ -218,7 +217,7 @@ export class WebServer {
         },
       }),
     );
-    this.app.use("/",              createPublicRouter(this.redis));
+    this.app.use("/",              createPublicRouter(this.redis, this.platformHandler));
     this.app.use("/health",        createHealthRouter());
     this.app.use("/api/version",   createVersionRouter(this.db, this.redis));
     this.app.use("/api/auth",      createAuthRouter(this.db, this.redis));

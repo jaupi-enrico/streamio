@@ -13,6 +13,7 @@
     "./login-checker",
     "./power-controller",
     "./updater",
-    "./redirect"
+    "./redirect",
+    "./frontend"
   ]
 }

@@ -1,10 +1,9 @@
-import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
-import { existsSync } from "node:fs";
-import { Router } from "express";
-import path from "node:path";
+import express, { Router } from "express";
 import { publicLimiter } from "../auth/rateLimit.js";
 import type { Redis } from "../database/redis.js";
+import type { WebPlatformHandler } from "../PlatformHandler.js";
+import { frontendAssets, renderAppIndex } from "./frontend-app.js";
+import { createDetailsOgRenderer } from "./og-meta.js";
 
 type PublicPage =
     | "home"
@@ -22,30 +21,8 @@ type PublicPage =
     | "verifyEmail"
     | "resetPassword";
 
-const pageFiles: Record<PublicPage, string> = {
-    home: "home.html",
-    catalog: "catalog.html",
-    search: "search.html",
-    providers: "providers.html",
-    details: "details.html",
-    watch: "watch.html",
-    rooms: "rooms.html",
-    account: "account.html",
-    adminProviders: "admin-providers.html",
-    adminLocalProvider: "admin-local-provider.html",
-    login: "login.html",
-    tv:    "tv.html",
-    verifyEmail:   "verify-email.html",
-    resetPassword: "reset-password.html"
-};
-
-function resolvePublicDir() {
-    return path.resolve(process.cwd(), "public");
-}
-
-export function createPublicRouter(redis: Redis) {
+export function createPublicRouter(redis: Redis, platformHandler: WebPlatformHandler) {
     const router = Router();
-    const publicDir = resolvePublicDir();
 
     // These are static HTML documents, so the cost of serving one is small —
     // but they are the only unauthenticated, uncached entry points on the
@@ -62,71 +39,76 @@ export function createPublicRouter(redis: Redis) {
     // and throttle playback.
     const limit = publicLimiter(redis);
 
-    router.get("/", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.home));
-    });
+    const detailsOgTags = createDetailsOgRenderer(platformHandler, redis);
 
-    router.get("/home", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.home));
-    });
+    // Bundle files at the root (the live mount's <base> is "/"). Only these
+    // prefixes, so an API request passing through never costs a stat.
+    // /icons is also in public/, which is served first and wins.
+    const assets = frontendAssets();
+    for (const prefix of ["/assets", "/vendor", "/icons"]) {
+        router.use(prefix, (req, res, next) => {
+            req.url = prefix + req.url;
+            assets(req, res, (err?: unknown) => {
+                req.url = req.url.slice(prefix.length);
+                next(err);
+            });
+        });
+    }
 
-    router.get("/catalog", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.catalog));
-    });
+    const page = (name: PublicPage): express.RequestHandler => async (req, res, next) => {
+        try {
+            const headExtra = name === "details"
+                ? await detailsOgTags(req.query as Record<string, unknown>)
+                : "";
+            const html = renderAppIndex({
+                mount: "",
+                requestPath: req.originalUrl.split("?")[0] ?? "/",
+                headExtra,
+            });
+            if (html === null) {
+                res.status(503).type("text/plain").send("The frontend has not been built (npm run build).");
+                return;
+            }
+            res.setHeader("Cache-Control", "no-cache");
+            res.type("html").send(html);
+        } catch (err) {
+            next(err);
+        }
+    };
 
-    router.get("/search", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.search));
-    });
+    router.get("/", limit, page("home"));
 
-    router.get("/providers", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.providers));
-    });
+    router.get("/home", limit, page("home"));
 
-    router.get("/details", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.details));
-    });
+    router.get("/catalog", limit, page("catalog"));
 
-    router.get("/watch", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.watch));
-    });
+    router.get("/search", limit, page("search"));
 
-    router.get("/rooms", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.rooms));
-    });
+    router.get("/providers", limit, page("providers"));
 
-    router.get("/account", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.account));
-    });
+    router.get("/details", limit, page("details"));
 
-    router.get("/admin/providers", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.adminProviders));
-    });
+    router.get("/watch", limit, page("watch"));
 
-    router.get("/admin/local-provider", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.adminLocalProvider));
-    });
+    router.get("/rooms", limit, page("rooms"));
 
-    router.get("/login", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.login));
-    });
+    router.get("/account", limit, page("account"));
+
+    router.get("/admin/providers", limit, page("adminProviders"));
+
+    router.get("/admin/local-provider", limit, page("adminLocalProvider"));
+
+    router.get("/login", limit, page("login"));
 
     // Where a television sends its user: short enough to read off a screen and
     // type on a phone. The page itself requires a session (see scripts/tv.js).
-    router.get("/tv", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.tv));
-    });
+    router.get("/tv", limit, page("tv"));
 
-    router.get("/auth/callback", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.login)); 
-    });
+    router.get("/auth/callback", limit, page("login"));
 
-    router.get("/verify-email", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.verifyEmail));
-    });
+    router.get("/verify-email", limit, page("verifyEmail"));
 
-    router.get("/reset-password", limit, (_, res) => {
-        res.sendFile(path.join(publicDir, pageFiles.resetPassword));
-    });
+    router.get("/reset-password", limit, page("resetPassword"));
 
     return router;
 }

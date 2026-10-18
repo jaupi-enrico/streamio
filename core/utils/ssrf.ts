@@ -53,6 +53,21 @@ export class BlockedUrlError extends Error {
   }
 }
 
+/**
+ * Thrown when a host's name could not be resolved at all — a resolver
+ * failure, not a policy refusal. Kept apart from `BlockedUrlError` because the
+ * two mean opposite things to a caller: a blocked URL will be blocked again,
+ * while a lookup that failed (Docker's embedded resolver forwarding to a flaky
+ * upstream, say) usually succeeds on the next try — so a proxy answers it
+ * with a retryable 5xx, not a 4xx the player takes as final.
+ */
+export class HostResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HostResolutionError";
+  }
+}
+
 function allowPrivateUpstream(): boolean {
   // Read per call, not once at import: tests and `dotenv` both set this after
   // some modules have already been loaded.
@@ -273,6 +288,18 @@ interface CacheEntry {
  */
 const HOST_CACHE_TTL_MS = 30_000;
 
+/**
+ * How long past its TTL an entry is still kept as a fallback for when the
+ * resolver fails outright. Those addresses were validated when they were
+ * resolved, so reusing them reopens no rebinding window — it only rides out a
+ * resolver hiccup that would otherwise kill a stream mid-episode (one failed
+ * segment lookup is a fatal SEGMENT_NETWORK error on the Cast receiver).
+ */
+const HOST_CACHE_STALE_MS = 10 * 60_000;
+
+/** Lookup attempts before a resolver failure is final, and the pause before each retry. */
+const LOOKUP_RETRY_DELAYS_MS = [250, 750];
+
 /** Bound on the cache, so a hostile caller can't grow it without limit. */
 const HOST_CACHE_MAX = 512;
 
@@ -282,14 +309,20 @@ function cacheKey(hostname: string, family: number): string {
   return `${family}:${hostname.toLowerCase()}`;
 }
 
-function readCache(hostname: string, family: number): ResolvedAddress[] | null {
+function readCache(
+  hostname: string,
+  family: number,
+  allowStale = false,
+): ResolvedAddress[] | null {
   const key = cacheKey(hostname, family);
   const hit = hostCache.get(key);
   if (!hit) return null;
-  if (hit.expires <= Date.now()) {
+  const now = Date.now();
+  if (hit.expires + HOST_CACHE_STALE_MS <= now) {
     hostCache.delete(key);
     return null;
   }
+  if (hit.expires <= now && !allowStale) return null;
   return hit.addresses;
 }
 
@@ -301,7 +334,7 @@ function writeCache(
   if (hostCache.size >= HOST_CACHE_MAX) {
     const now = Date.now();
     for (const [key, entry] of hostCache) {
-      if (entry.expires <= now) hostCache.delete(key);
+      if (entry.expires + HOST_CACHE_STALE_MS <= now) hostCache.delete(key);
     }
     // Still full of live entries — this is a cache, not a ledger.
     if (hostCache.size >= HOST_CACHE_MAX) hostCache.clear();
@@ -348,14 +381,26 @@ async function resolveHost(
   const cached = readCache(host, family);
   if (cached) return cached;
 
-  let addresses: ResolvedAddress[];
-  try {
-    addresses = (await dns.lookup(host, {
-      all: true,
-      ...(family ? { family } : {}),
-    })) as ResolvedAddress[];
-  } catch {
-    throw new BlockedUrlError(`Could not resolve host "${host}"`);
+  let addresses: ResolvedAddress[] | undefined;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      addresses = (await dns.lookup(host, {
+        all: true,
+        ...(family ? { family } : {}),
+      })) as ResolvedAddress[];
+      break;
+    } catch (err) {
+      if (attempt < LOOKUP_RETRY_DELAYS_MS.length) {
+        await new Promise((r) => setTimeout(r, LOOKUP_RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      const stale = readCache(host, family, true);
+      if (stale) return stale;
+      const code = (err as NodeJS.ErrnoException)?.code;
+      throw new HostResolutionError(
+        `Could not resolve host "${host}"${code ? ` (${code})` : ""}`,
+      );
+    }
   }
 
   if (!addresses.length) {

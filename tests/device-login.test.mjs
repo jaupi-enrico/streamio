@@ -5,7 +5,7 @@
  * Unlike the provider suites next door these need no network — but they cover
  * the same kind of failure, the kind that succeeds quietly. The user code is
  * generated in TypeScript, rendered on a television, retyped by a human, and
- * normalized *again* by `public/scripts/tv.js` before it comes back. If those
+ * normalized *again* by `frontend/src/pages/tv/device-code.ts` before it comes back. If those
  * two normalizers ever disagree about the alphabet or the grouping, every
  * pairing fails with "that code has expired" and nothing anywhere logs why.
  *
@@ -95,15 +95,13 @@ check("drop characters the generator can never emit", () => {
   assertEqual(normalizeUserCode("!!K7RQ@@4M3P##"), "K7RQ-4M3P", "punctuation");
 });
 
-check("the browser's normalizer agrees with the server's", () => {
-  // The one that drifts silently: two copies of the same alphabet in two
-  // languages, one of which nobody recompiles.
-  const tvJs = readFileSync(new URL("../public/scripts/tv.js", import.meta.url), "utf8");
-  const match = tvJs.match(/const ALPHABET = '([^']+)'/);
-  assert(match, "could not find ALPHABET in public/scripts/tv.js");
+check("the React frontend's normalizer agrees with the server's", () => {
+  // The same drift risk: two copies of the alphabet in two languages, one of
+  // which nobody recompiles.
+  const ts = readFileSync(new URL("../frontend/src/pages/tv/device-code.ts", import.meta.url), "utf8");
+  const match = ts.match(/export const ALPHABET = "([^"]+)"/);
+  assert(match, "could not find ALPHABET in frontend/src/pages/tv/device-code.ts");
 
-  // Recover the server's alphabet from its own output rather than exporting it
-  // — this asserts on what codes are actually made of.
   const seen = new Set();
   for (let i = 0; i < 5000; i++) {
     for (const ch of generateUserCode().replace("-", "")) seen.add(ch);
@@ -111,7 +109,7 @@ check("the browser's normalizer agrees with the server's", () => {
 
   const browser = new Set(match[1]);
   for (const ch of seen) {
-    assert(browser.has(ch), `server emits '${ch}', which tv.js would strip out`);
+    assert(browser.has(ch), `server emits '${ch}', which device-code.ts would strip out`);
   }
 });
 

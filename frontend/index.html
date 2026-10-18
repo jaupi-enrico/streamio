@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!--streamio:config-->
+  <title>Streamio</title>
+  <link rel="shortcut icon" href="%BASE_URL%icons/site-icon.png" type="image/x-icon">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <!-- The DM Sans variant most vanilla pages load; usePageScope() swaps in a
+       page's own where it differs (home, account, admin). -->
+  <link id="streamio-font" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!--streamio:og-->
+  <style>
+    /* The pages' own palettes arrive with their scoped stylesheets; until the
+       bundle runs, match their background so the first paint isn't white. */
+    html, body { background: #141414; margin: 0; }
+    /* The vanilla pages lay out <body>'s own children (the login page is a
+       flex column of nav + main). #root must not become a box in between. */
+    #root { display: contents; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./src/main.tsx"></script>
+</body>
+</html>

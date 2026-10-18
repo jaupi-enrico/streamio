@@ -1,0 +1,24 @@
+{
+  // What runs in Node rather than the browser: the build tooling
+  // (vite.config.ts, build/*) and the vitest suites. Kept apart from
+  // tsconfig.json so page code never sees Node's types (`setTimeout` stays the
+  // browser's). The tests import page modules, hence DOM here too.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "types": ["node", "vite/client"],
+    "paths": {
+      "@server/*": ["../dist/*"]
+    }
+  },
+  "include": ["vite.config.ts", "build", "src/**/*.test.ts"]
+}

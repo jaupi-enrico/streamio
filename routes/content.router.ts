@@ -1,11 +1,11 @@
 import { Router } from "express";
 import type { Request } from "express";
 import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { WebPlatformHandler } from "../PlatformHandler.js";
 import { UnknownProviderError } from "../core/core.js";
 import {
     BlockedUrlError,
+    HostResolutionError,
     assertObjectFetchable,
     parseHttpUrl,
     safeFetch,
@@ -77,6 +77,46 @@ function rewriteHlsManifest(text: string, source: URL, proxyPrefix: string): str
             return toProxy(trimmed);
         })
         .join("\n");
+}
+
+// Host and path only: the query string of a resolved stream URL is where its
+// signed token lives.
+/** First-byte budget for one upstream attempt, and how many attempts. Together
+ *  (plus the pauses between them) they stay under the 30s TTFB budget the
+ *  players give a fragment, so a dead upstream still answers 504 in time. */
+const UPSTREAM_TTFB_MS = 8_000;
+const UPSTREAM_ATTEMPTS = 3;
+const UPSTREAM_RETRY_DELAY_MS = 300;
+/** How many times a segment body that dies mid-transfer is resumed. */
+const UPSTREAM_BODY_RESUMES = 3;
+
+/** A stall or dropped connection worth one more try — not a refusal. */
+function isTransientUpstreamError(err: unknown): boolean {
+    if (err instanceof BlockedUrlError || err instanceof HostResolutionError) return false;
+    if ((err as any)?.cause instanceof HostResolutionError) return false;
+    if ((err as any)?.cause instanceof BlockedUrlError) return false;
+    // AbortError (our TTFB timer), undici's "fetch failed"/"terminated"
+    // TypeErrors, socket resets.
+    return true;
+}
+
+/** `bytes=a-` / `bytes=a-b` (or no header: the whole body from 0). Null for
+ *  suffix and multi-range requests, which aren't resumed. */
+function parseSingleRange(header: string | undefined): { start: number; end?: number } | null {
+    if (!header) return { start: 0 };
+    const m = /^bytes=(\d+)-(\d*)$/.exec(header.trim());
+    if (!m) return null;
+    return { start: Number(m[1]), ...(m[2] ? { end: Number(m[2]) } : {}) };
+}
+
+function contentRangeStart(response: { headers: { get(name: string): string | null } }): number | null {
+    const m = /^bytes (\d+)-/.exec(response.headers.get("content-range") ?? "");
+    return m ? Number(m[1]) : null;
+}
+
+function logSafeUrl(url: URL): string {
+    const path = url.pathname.length > 80 ? url.pathname.slice(0, 80) + "…" : url.pathname;
+    return url.host + path;
 }
 
 function readPage(value: unknown) {
@@ -461,6 +501,9 @@ export function createContentRouter(
                     // fishing for.
                     return res.status(400).json({ error: "Unsupported server URL" });
                 }
+                if (err instanceof HostResolutionError) {
+                    return res.status(502).json({ error: "Could not reach the stream host" });
+                }
                 throw err;
             }
 
@@ -534,62 +577,104 @@ export function createContentRouter(
                 ? `cast-proxy?direct=1&${refParam}url=`
                 : `${CAST_PUBLIC_BASE}/api/cast-proxy?${refParam}url=`;
 
-        // Bound how long a hung upstream connection can block a segment —
-        // without this, a stalled CDN connection starves the player
-        // indefinitely instead of surfacing as a fetch error hls.js can
-        // retry from.
+        // Flaky CDN edges are the common failure here, and they fail in two
+        // ways: a connection that never answers, and a body that dies part
+        // way through ("terminated"). Both used to reach the player as-is, and
+        // the Cast receiver gives up on a segment after a handful of those
+        // (error 301) — even though a fresh connection to the same edge
+        // usually works at once. So the proxy retries upstream itself:
         //
-        // This bounds time-to-FIRST-BYTE only, and the distinction is
-        // load-bearing: the timer used to cover the whole exchange, body
-        // included, so a large fragment arriving over a slow tunnel was
-        // aborted mid-download at 20s even though it was transferring fine.
-        // It is cleared the moment response headers arrive; from there the
-        // client's own disconnect (below) is what ends a stream nobody is
-        // waiting for any more.
+        // - Time-to-first-byte is bounded *per attempt* (UPSTREAM_TTFB_MS), and
+        //   a stalled or 5xx attempt is retried on a new request. Only the
+        //   first byte is bounded, never the body: a large fragment arriving
+        //   over a slow tunnel is transferring fine and must not be cut off.
+        //   All attempts together stay under the client's own TTFB budget
+        //   (`fragLoadPolicy` in public/scripts/watch.js, 30s), so a truly
+        //   dead upstream still surfaces as an explicit 504 it can retry from.
+        // - A segment body that dies mid-transfer is resumed with a Range
+        //   request from the first byte not yet sent, and spliced onto the
+        //   same response — the player sees one slightly slower download
+        //   instead of a truncated one.
         //
-        // Kept just under the client's TTFB budget (see `fragLoadPolicy` in
-        // public/scripts/watch.js) so a dead upstream surfaces as an explicit
-        // 504 hls.js can retry from, rather than as a client-side timeout.
-        const upstreamController = new AbortController();
-        const upstreamTimeout = setTimeout(
-            () => upstreamController.abort(),
-            25_000
-        );
-        res.on("close", () => upstreamController.abort());
+        // The client hanging up (seek, next episode, its own retry) aborts
+        // whichever attempt is in flight and stops all of this.
+        let clientGone = false;
+        let inFlight: AbortController | null = null;
+        res.on("close", () => {
+            clientGone = true;
+            inFlight?.abort();
+        });
+
+        const upstreamHeaders: Record<string, string> = {
+            "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": refOverride || target.origin + "/",
+            ...(refOverride
+                ? { Origin: new URL(refOverride).origin }
+                : {}),
+            // Some CDNs 403 anything that doesn't look like a
+            // cross-origin XHR from a player page, and want all three
+            // of these — any two still fail. A real browser always
+            // sends them, so their *absence* is the anomaly and no
+            // upstream can be broken by having them.
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "cross-site",
+        };
+
+        /** One request, headers only; the timer is cleared once they arrive. */
+        const fetchOnce = async (range: string | undefined) => {
+            const controller = new AbortController();
+            inFlight = controller;
+            const timer = setTimeout(() => controller.abort(), UPSTREAM_TTFB_MS);
+            try {
+                return await safeFetch(target, {
+                    signal: controller.signal,
+                    headers: { ...upstreamHeaders, ...(range ? { Range: range } : {}) },
+                });
+            } finally {
+                clearTimeout(timer);
+            }
+        };
+
+        /**
+         * `fetchOnce`, retried while the failure looks transient: a stall, a
+         * dropped connection, a 5xx. A 4xx is the upstream's answer and is
+         * returned as-is; a blocked or unresolvable URL throws straight out.
+         */
+        const fetchWithRetry = async (range: string | undefined) => {
+            for (let attempt = 1; ; attempt++) {
+                if (clientGone) throw Object.assign(new Error("client gone"), { name: "AbortError" });
+                const last = attempt >= UPSTREAM_ATTEMPTS;
+                try {
+                    const result = await fetchOnce(range);
+                    if (result.response.status < 500 || last) return result;
+                    console.warn("[CAST-PROXY] upstream", result.response.status, "retrying", logSafeUrl(result.url));
+                    await result.response.arrayBuffer().catch(() => {});
+                } catch (err) {
+                    if (clientGone || last || !isTransientUpstreamError(err)) throw err;
+                    console.warn(
+                        "[CAST-PROXY] upstream",
+                        (err as any)?.name === "AbortError" ? "timeout" : "failed",
+                        `(attempt ${attempt}), retrying`,
+                        logSafeUrl(target),
+                    );
+                }
+                await new Promise((r) => setTimeout(r, UPSTREAM_RETRY_DELAY_MS));
+            }
+        };
 
         try {
             // Forward Range so the Chromecast can seek inside media segments.
             const range = req.headers.range;
-            const { response: upstream, url: servedFrom } = await safeFetch(target, {
-                signal: upstreamController.signal,
-                headers: {
-                    "User-Agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Referer": refOverride || target.origin + "/",
-                    ...(refOverride
-                        ? { Origin: new URL(refOverride).origin }
-                        : {}),
-                    // Some CDNs 403 anything that doesn't look like a
-                    // cross-origin XHR from a player page, and want all three
-                    // of these — any two still fail. A real browser always
-                    // sends them, so their *absence* is the anomaly and no
-                    // upstream can be broken by having them.
-                    "sec-fetch-dest": "empty",
-                    "sec-fetch-mode": "cors",
-                    "sec-fetch-site": "cross-site",
-                    ...(range ? { Range: range } : {}),
-                },
-            });
-            // Headers are in — the body is now allowed to take as long as it
-            // takes. Everything below is already guarded by the res "close"
-            // abort above.
-            clearTimeout(upstreamTimeout);
+            let { response: upstream, url: servedFrom } = await fetchWithRetry(range);
 
             res.set("Access-Control-Allow-Origin", "*");
             res.set("Access-Control-Allow-Headers", "*");
 
             // 206 Partial Content is a success for ranged segment requests.
             if (!upstream.ok && upstream.status !== 206) {
+                console.warn("[CAST-PROXY] upstream", upstream.status, logSafeUrl(servedFrom));
                 return res.status(upstream.status).send("Upstream error");
             }
 
@@ -604,21 +689,33 @@ export function createContentRouter(
             // redirects chased by hand, `upstream.url` is only ever the URL of
             // the request that produced this response's *headers*, so it can't
             // stand in here.
-            const base = servedFrom;
-
             const contentType = upstream.headers.get("content-type") ?? "";
             const isManifest =
                 contentType.includes("mpegurl") ||
-                base.pathname.endsWith(".m3u8") ||
+                servedFrom.pathname.endsWith(".m3u8") ||
                 target.pathname.endsWith(".m3u8") ||
-                base.search.includes("type=audio") ||      // e.g. an audio-only rendition playlist
-                base.search.includes("type=video") ||      // e.g. a video-only rendition playlist
-                base.search.includes("type=subtitle");     // e.g. a subtitle rendition playlist
+                servedFrom.search.includes("type=audio") ||      // e.g. an audio-only rendition playlist
+                servedFrom.search.includes("type=video") ||      // e.g. a video-only rendition playlist
+                servedFrom.search.includes("type=subtitle");     // e.g. a subtitle rendition playlist
 
             if (isManifest) {
+                // Nothing has been sent yet, so a body that dies here is
+                // simply fetched again.
+                let text: string | null = null;
+                for (let attempt = 1; text === null; attempt++) {
+                    try {
+                        text = await upstream.text();
+                    } catch (err) {
+                        if (clientGone || attempt >= UPSTREAM_ATTEMPTS) throw err;
+                        console.warn("[CAST-PROXY] manifest body failed, retrying", logSafeUrl(target));
+                        ({ response: upstream, url: servedFrom } = await fetchWithRetry(range));
+                        if (!upstream.ok) {
+                            return res.status(upstream.status).send("Upstream error");
+                        }
+                    }
+                }
                 res.set("Content-Type", "application/vnd.apple.mpegurl");
-                const text = await upstream.text();
-                return res.send(rewriteHlsManifest(text, base, childProxyPrefix));
+                return res.send(rewriteHlsManifest(text, servedFrom, childProxyPrefix));
             }
 
             // Binary passthrough (media segments, AES keys, VTT, ...). Mirror
@@ -655,27 +752,111 @@ export function createContentRouter(
             if (!upstream.body) {
                 return res.end();
             }
-            await pipeline(
-                Readable.fromWeb(upstream.body as any),
-                res
-            );
+
+            // Where the bytes we are relaying start, so a resume can ask for
+            // "from here on". Only a plain single range (or none) can be
+            // resumed; anything fancier is relayed once, as before.
+            const requested = parseSingleRange(range);
+            let sent = 0;
+            let body = upstream.body;
+            let skip = 0;
+            for (let resumes = 0; ; resumes++) {
+                try {
+                    for await (const chunk of Readable.fromWeb(body as any)) {
+                        let buf = chunk as Buffer;
+                        // An upstream that ignored our Range and answered 200
+                        // starts from byte 0 again; drop what was already sent.
+                        if (skip > 0) {
+                            const drop = Math.min(skip, buf.length);
+                            skip -= drop;
+                            buf = buf.subarray(drop);
+                            if (!buf.length) continue;
+                        }
+                        sent += buf.length;
+                        if (!res.write(buf)) {
+                            // "close" too: a client gone mid-wait never drains.
+                            await new Promise<void>((resolve) => {
+                                const done = () => {
+                                    res.off("drain", done);
+                                    res.off("close", done);
+                                    resolve();
+                                };
+                                res.on("drain", done);
+                                res.on("close", done);
+                            });
+                            if (clientGone) return;
+                        }
+                    }
+                    return res.end();
+                } catch (err) {
+                    if (clientGone) return;
+                    if (!requested || resumes >= UPSTREAM_BODY_RESUMES) throw err;
+                    console.warn(
+                        "[CAST-PROXY] body failed at",
+                        sent,
+                        "bytes, resuming",
+                        logSafeUrl(target),
+                        String((err as any)?.message ?? err),
+                    );
+                    const from = requested.start + sent;
+                    const resumeRange = `bytes=${from}-${requested.end ?? ""}`;
+                    const resumed = (await fetchWithRetry(resumeRange)).response;
+                    if (resumed.status === 206 && contentRangeStart(resumed) === from && resumed.body) {
+                        body = resumed.body;
+                        skip = 0;
+                    } else if (resumed.status === 200 && !range && resumed.body) {
+                        body = resumed.body;
+                        skip = sent;
+                    } else {
+                        await resumed.arrayBuffer().catch(() => {});
+                        throw err;
+                    }
+                }
+            }
         } catch (err) {
-            clearTimeout(upstreamTimeout);
             if ((err as any)?.name === "AbortError") {
-                if (!res.headersSent) res.status(504).send("Upstream timeout");
+                // The same abort fires when the client hangs up (res "close"),
+                // which is routine — only a timeout with the client still
+                // waiting is worth a line.
+                if (!clientGone && !res.headersSent) {
+                    console.warn("[CAST-PROXY] upstream timeout, giving up", logSafeUrl(target));
+                    res.status(504).send("Upstream timeout");
+                }
                 return;
             }
             // A redirect into a private address, or a URL that was fine on the
             // way in and resolved somewhere it shouldn't. Never a 5xx: nothing
             // is wrong with this server.
             if (err instanceof BlockedUrlError) {
+                console.warn("[CAST-PROXY] blocked", logSafeUrl(target), String(err.message));
                 if (!res.headersSent) res.status(400).send("Blocked url");
                 return;
             }
-            // Client aborted mid-segment (seek, tab close, hls.js retry) —
-            // pipeline() throws once the response is already committed, so
-            // there's no JSON error we could send even if we wanted to.
-            if ((err as any)?.code === "ERR_STREAM_PREMATURE_CLOSE" || res.headersSent) {
+            // The resolver failed even after retrying. Unlike a block this is
+            // transient, so it must look transient to the player: a 4xx is a
+            // final answer for a segment (the Cast receiver gives up with
+            // error 301), a 502 is one it retries.
+            const resolution =
+                err instanceof HostResolutionError ? err
+                : (err as any)?.cause instanceof HostResolutionError ? (err as any).cause
+                : null;
+            if (resolution) {
+                console.warn("[CAST-PROXY] dns", logSafeUrl(target), String(resolution.message));
+                if (!res.headersSent) res.status(502).send("Upstream unresolvable");
+                return;
+            }
+            if (clientGone) return;
+            if (res.headersSent) {
+                // Mid-body and out of resumes. Destroying the socket makes the
+                // player see a network error it retries, rather than a short
+                // body it would take for a complete (corrupt) segment.
+                console.warn("[CAST-PROXY] body failed", logSafeUrl(target), String((err as any)?.message ?? err));
+                res.destroy();
+                return;
+            }
+            if (isTransientUpstreamError(err)) {
+                console.warn("[CAST-PROXY] upstream failed", logSafeUrl(target), String((err as any)?.message ?? err));
+                res.status(502).send("Upstream error");
                 return;
             }
             next(err);

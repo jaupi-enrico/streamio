@@ -1,0 +1,31 @@
+{
+  // Strict, unlike the backend. Checked by `npm run typecheck:frontend`; the
+  // root `npx tsc --noEmit` excludes this directory.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vite/client"],
+    // The backend's own emitted declarations (`npm run build`/`watch` writes
+    // them to dist/). Types only — `import type` is erased, so no server code
+    // reaches the bundle — and skipLibCheck keeps the non-strict backend from
+    // being re-checked under this config.
+    "paths": {
+      "@server/*": ["../dist/*"]
+    }
+  },
+  "include": ["src"],
+  // Tests run in Node (vitest) and are checked by tsconfig.node.json.
+  "exclude": ["src/**/*.test.ts"]
+}
