@@ -3,8 +3,8 @@
  * all is lib/pages.ts (IMPLEMENTED_PAGES) — the two must agree, which the
  * check at the bottom enforces at startup in development.
  *
- * Paths and query parameters are exactly the vanilla site's, so a URL maps
- * between the two copies by adding or removing the /preview mount alone.
+ * Paths and query parameters are those of the original vanilla site, so
+ * existing links and bookmarks keep working.
  */
 import { lazy, Suspense, type ComponentType, type JSX } from "react";
 import type { RouteObject } from "react-router";

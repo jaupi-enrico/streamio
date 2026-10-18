@@ -16,6 +16,7 @@
     "dev": "nodemon dist/index.js",
     "dev:frontend": "vite --config frontend/vite.config.ts",
     "stop": "pkill -f 'node dist/index.js'",
+    "logs": "docker compose logs -f --tail=200 streamio",
     "test:providers": "npm run build && node tests/providers.test.mjs",
     "test:genres": "npm run build && node tests/genres.test.mjs",
     "test:device-login": "npm run build && node tests/device-login.test.mjs",
@@ -23,7 +24,6 @@
     "test:og": "npm run build && node tests/og-meta.test.mjs",
     "typecheck:frontend": "tsc -p frontend && tsc -p frontend/tsconfig.node.json",
     "test:frontend": "vitest run --config frontend/vite.config.ts",
-    "test:frontend-parity": "vitest run --config frontend/vite.config.ts parity",
     "release": "bash scripts/release.sh"
   },
   "keywords": [
@@ -37,6 +37,8 @@
   "license": "CC-BY-NC-SA-4.0",
   "type": "module",
   "devDependencies": {
+    "@ffmpeg/ffmpeg": "0.12.10",
+    "@ffmpeg/util": "0.12.1",
     "@swc/cli": "^0.8.1",
     "@swc/core": "^1.15.33",
     "@tanstack/react-query": "^5.103.2",

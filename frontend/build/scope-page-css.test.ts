@@ -36,7 +36,7 @@ describe("scopePageCss", () => {
   });
 
   it("leaves stylesheets outside src/pages alone", async () => {
-    const css = ".sp-preview-banner { color: red; }";
-    expect(await run(css, "/x/frontend/src/styles/preview-banner.css")).toBe(css);
+    const css = ".sp-shared { color: red; }";
+    expect(await run(css, "/x/frontend/src/styles/shared.css")).toBe(css);
   });
 });

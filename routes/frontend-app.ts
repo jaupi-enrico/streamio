@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import express from "express";
 /**
  * The React frontend's built index.html (`frontend/`, built by
  * `npm run build:frontend` into dist/frontend), rendered for one mount.
  *
  * The bundle is built with a relative base because two things are only known
- * at request time: where this copy of the app is mounted ("/preview" for the
- * side-by-side preview, "" once pages are switched over) and the path prefix,
+ * at request time: where this copy of the app is mounted ("" on the live site) and the path prefix,
  * if any, that a reverse proxy strips before the request reaches us.
  *
  * The prefix is deliberately **not** taken from APP_URL. APP_URL says where
@@ -23,8 +23,7 @@ import path from "node:path";
  * basename, API URLs — frontend/src/lib/base.ts) and a `<base href>`, so the
  * hashed assets after it resolve under the prefix on any route depth.
  *
- * Used by preview.router.ts; the switch-over step will use it from
- * public.router.ts as well.
+ * Used by public.router.ts (mount "").
  */
 
 export const FRONTEND_DIR = path.resolve(process.cwd(), "dist", "frontend");
@@ -57,12 +56,10 @@ function scriptJson(value: unknown): string {
 }
 
 export interface AppIndexOptions {
-  /** "/preview" or "" (live). No trailing slash. */
+  /** Where the app is mounted: "" for the live site. No trailing slash. */
   mount: string;
   /** The request's path as this server received it (`req.originalUrl`, no query). */
   requestPath: string;
-  /** Page keys switched over on the live site (REACT_PAGES). */
-  livePages?: string[];
   /** Extra <head> markup (Open Graph tags), already escaped by the caller. */
   headExtra?: string;
 }
@@ -72,7 +69,7 @@ export interface AppIndexOptions {
  * above), publishes the config and inserts the <base>. Kept dependency-free
  * and tiny; the values are spliced in as JSON.
  */
-function bootScript(config: { mount: string; livePages: string[] }, requestPath: string): string {
+function bootScript(config: { mount: string }, requestPath: string): string {
   return `<script>(function(){
 var c=${scriptJson(config)},s=${scriptJson(requestPath)},p=location.pathname,x="";
 if(p.length>=s.length&&p.slice(p.length-s.length)===s)x=p.slice(0,p.length-s.length).replace(/\\/+$/,"");
@@ -82,11 +79,38 @@ var b=document.createElement("base");b.href=x+c.mount+"/";document.head.prepend(
 }
 
 /** The rendered page, or null when the frontend hasn't been built. */
-export function renderAppIndex({ mount, requestPath, livePages = [], headExtra = "" }: AppIndexOptions): string | null {
+export function renderAppIndex({ mount, requestPath, headExtra = "" }: AppIndexOptions): string | null {
   const template = readTemplate();
   if (template === null) return null;
 
   return template
-    .replace("<!--streamio:config-->", bootScript({ mount, livePages }, requestPath))
+    .replace("<!--streamio:config-->", bootScript({ mount }, requestPath))
     .replace("<!--streamio:og-->", headExtra);
+}
+
+/**
+ * The built bundle's files (hashed assets, icons, vendored ffmpeg) as static
+ * responses. `index: false` and the `/index.html` skip keep the raw template —
+ * which has no config injected — from ever being served as a page.
+ */
+export function frontendAssets(): express.RequestHandler {
+  const files = express.static(FRONTEND_DIR, {
+    index: false,
+    // Its trailing-slash redirect would answer with a root-relative Location
+    // that drops a path-prefixed install's prefix.
+    redirect: false,
+    setHeaders: (res, filePath) => {
+      // Vite content-hashes everything under assets/, so a file there never
+      // changes; icons and other public/ copies keep a short TTL.
+      const hashed = filePath.startsWith(path.join(FRONTEND_DIR, "assets") + path.sep);
+      res.setHeader("Cache-Control", hashed ? "public, max-age=31536000, immutable" : "public, max-age=3600");
+    },
+  });
+  return (req, res, next) => {
+    if (req.path === "/index.html" || !frontendBuilt()) {
+      next();
+      return;
+    }
+    files(req, res, next);
+  };
 }

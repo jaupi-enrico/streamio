@@ -25,6 +25,10 @@ import type { ControlsSnapshot, OsdIcon, PlayerControls } from "./controls";
 import { SPEED_STEPS } from "./logic/playback";
 import { shortcutGroups } from "./logic/shortcuts";
 import type { WatchSession } from "./session";
+import { useStore } from "./store";
+import type { UpNextSnapshot } from "./upnext";
+import type { RoomSnapshot } from "./room";
+import type { CastSnapshot } from "./cast";
 
 const OSD_ICONS: Record<OsdIcon, () => JSX.Element> = {
   play: IconPlay,
@@ -56,6 +60,17 @@ const IDLE: ControlsSnapshot = {
 };
 
 const noopSubscribe = (): (() => void) => () => {};
+
+const UPNEXT_IDLE: UpNextSnapshot = { nextLabel: "Next episode", nextShown: false, skipLabel: "Skip Intro", skipShown: false };
+export const ROOM_IDLE: RoomSnapshot = {
+  code: null,
+  members: [],
+  ownerId: null,
+  selfId: null,
+  panelOpen: false,
+  toast: { text: "", shown: false },
+};
+export const CAST_IDLE: CastSnapshot = { buttonDisplay: "none", connected: false, panelOpen: false, view: null };
 
 export function useControls(controls: PlayerControls | null): ControlsSnapshot {
   return useSyncExternalStore(controls ? controls.subscribe : noopSubscribe, controls ? controls.getSnapshot : () => IDLE);
@@ -100,8 +115,13 @@ export function PlayerChrome({
 }): JSX.Element {
   const controls = session?.controls ?? null;
   const c = useControls(controls);
-  // Every handler waits for init, as the vanilla bindings did.
+  // Every handler waits for init, as the vanilla bindings did — except the
+  // prompts, the watch-party, Cast and download buttons, which the vanilla
+  // page bound on load.
   const live = c.initialized ? controls : null;
+  const up = useStore(session?.upNext.store, UPNEXT_IDLE);
+  const room = useStore(session?.room.store, ROOM_IDLE);
+  const cast = useStore(session?.cast.store, CAST_IDLE);
 
   const controlsRef = useRef<HTMLDivElement | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -145,18 +165,22 @@ export function PlayerChrome({
       </div>
 
       <div className="player-controls" id="playerControls" ref={controlsRef}>
-        <div className="next-ep-prompt" id="nextEpPrompt">
-          <span id="nextEpLabel">Next episode</span>
-          <button id="nextEpBtn">
+        <div className={`next-ep-prompt${up.nextShown ? " show" : ""}`} id="nextEpPrompt">
+          <span id="nextEpLabel">{up.nextLabel}</span>
+          <button id="nextEpBtn" onClick={() => session?.upNext.playNext()}>
             <svg className="icon-svg" viewBox="0 0 24 24">
               <polygon points="5 3 19 12 5 21 5 3" />
             </svg>{" "}
             Play next
           </button>
-          <button id="nextEpCancel">✕</button>
+          <button id="nextEpCancel" onClick={() => session?.upNext.cancelNext()}>
+            ✕
+          </button>
         </div>
-        <div className="skip-segment-prompt" id="skipSegmentPrompt">
-          <button id="skipSegmentBtn">Skip Intro</button>
+        <div className={`skip-segment-prompt${up.skipShown ? " show" : ""}`} id="skipSegmentPrompt">
+          <button id="skipSegmentBtn" onClick={() => session?.upNext.skip()}>
+            {up.skipLabel}
+          </button>
         </div>
         <div className="progress-container">
           <div className="progress-bar" id="progressBar" ref={barRef}>
@@ -219,7 +243,12 @@ export function PlayerChrome({
                 <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
               </svg>
             </button>
-            <button className="pbtn" id="roomBtn" title="Watch Party">
+            <button
+              className={`pbtn${room.code ? " active" : ""}`}
+              id="roomBtn"
+              title="Watch Party"
+              onClick={() => session?.room.togglePanel()}
+            >
               <svg viewBox="0 0 24 24">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
                 <circle cx="9" cy="7" r="4" />
@@ -227,7 +256,13 @@ export function PlayerChrome({
                 <path d="M16 3.13a4 4 0 0 1 0 7.75" />
               </svg>
             </button>
-            <button className="pbtn" id="castBtn" title="Cast to TV" style={{ display: "none" }}>
+            <button
+              className="pbtn"
+              id="castBtn"
+              title="Cast to TV"
+              style={{ display: cast.buttonDisplay, ...(cast.connected ? { color: "var(--red)" } : {}) }}
+              onClick={() => session?.cast.onButtonClick()}
+            >
               <svg viewBox="0 0 24 24">
                 <path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6" />
                 <line x1="2" y1="20" x2="2.01" y2="20" />
@@ -325,7 +360,9 @@ export function PlayerChrome({
                 <div className="more-section">
                   <div className="more-section-title">Download</div>
                   <div className="more-section-list" id="downloadDropdown">
-                    <button className="dropdown-btn">Download MP4</button>
+                    <button className="dropdown-btn" onClick={() => void session?.download.download()}>
+                      Download MP4
+                    </button>
                   </div>
                 </div>
                 <div className="more-section">

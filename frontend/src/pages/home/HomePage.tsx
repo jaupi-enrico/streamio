@@ -6,8 +6,8 @@
  * list depend on who asks), settle the active provider — naming the server's
  * default explicitly, since every card stamps it into its link — then load.
  */
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type JSX, type ReactNode } from "react";
 import { IconCalendar, IconFilm } from "../../components/icons/icons";
 import { AppLink } from "../../components/layout/AppLink";
 import { BottomNav } from "../../components/layout/BottomNav";
@@ -169,6 +169,13 @@ function HeroImage({ item }: { item: HeroItem }): JSX.Element {
   );
 }
 
+/** Same look as the details page's watchlist button when the title is saved. */
+const SAVED_STYLE: CSSProperties = {
+  background: "rgba(70,211,105,0.15)",
+  borderColor: "rgba(70,211,105,0.4)",
+  color: "#46d369",
+};
+
 type HeroState =
   | { kind: "loading" }
   | { kind: "items"; items: HeroItem[] }
@@ -178,11 +185,13 @@ function Hero({
   hero,
   provider,
   prefs,
+  watchlist,
   onWatchlist,
 }: {
   hero: HeroState;
   provider: string;
   prefs: Preferences;
+  watchlist: (showId: string) => { saved: boolean; pending: boolean };
   onWatchlist: (showId: string) => void;
 }): JSX.Element {
   const items = hero.kind === "items" ? hero.items.slice(0, 5) : [];
@@ -250,13 +259,19 @@ function Hero({
         ) : null}
       </>
     );
+    const wl = watchlist(item.id);
     actions = (
       <>
         <AppLink to={detailsPath(item.id, provider)} className="btn btn-primary">
           ▶ Watch Now
         </AppLink>
-        <button className="btn btn-secondary" onClick={() => onWatchlist(item.id)}>
-          + Watchlist
+        <button
+          className="btn btn-secondary"
+          style={wl.saved ? SAVED_STYLE : undefined}
+          disabled={wl.pending}
+          onClick={() => onWatchlist(item.id)}
+        >
+          {wl.saved ? "✓ In Watchlist" : "+ Watchlist"}
         </button>
       </>
     );
@@ -596,6 +611,9 @@ export default function HomePage(): JSX.Element {
   const [booted, setBooted] = useState(false);
   const [solid, setSolid] = useState(false);
   const { toast: toastEl, show: toast } = useStatusToast();
+  const queryClient = useQueryClient();
+  // Keys with a watchlist request in flight — their button stays disabled.
+  const [wlPending, setWlPending] = useState<ReadonlySet<string>>(() => new Set());
 
   // Nav goes solid on scroll.
   useEffect(() => {
@@ -665,6 +683,24 @@ export default function HomePage(): JSX.Element {
     retry: false,
   });
 
+  // The signed-in visitor's watchlist as showKey()s, so the hero button can say
+  // whether the slide's title is already saved.
+  const watchlistKey = ["home-watchlist-keys"];
+  const watchlistQuery = useQuery({
+    queryKey: watchlistKey,
+    enabled: booted && Boolean(getAccessToken()),
+    queryFn: async () => {
+      const rows = await api<{ provider: string; show_id: string }[]>("/api/account/watchlist");
+      return new Set((rows || []).map((r) => showKey(r.provider, r.show_id)));
+    },
+    retry: false,
+  });
+
+  function watchlistState(showId: string) {
+    const key = showKey(active, showId);
+    return { saved: Boolean(watchlistQuery.data?.has(key)), pending: wlPending.has(key) };
+  }
+
   function selectProvider(slug: string) {
     if (!slug || slug === active) return;
     setActive(slug);
@@ -678,17 +714,50 @@ export default function HomePage(): JSX.Element {
     // Continue Watching is deliberately not reloaded: it spans every source.
   }
 
-  async function addToWatchlist(showId: string) {
+  async function toggleWatchlist(showId: string) {
     if (!active) {
       toast("Select a provider first.", "error");
       return;
     }
-    try {
-      await api("/api/account/watchlist", { method: "POST", body: { provider: active, show_id: showId } });
-      toast("Added to watchlist! ✓");
-    } catch {
-      // Likely not signed in.
+    if (!getAccessToken()) {
       window.location.href = loginHref(appPageHref("/"));
+      return;
+    }
+    const provider = active;
+    const key = showKey(provider, showId);
+    if (wlPending.has(key)) return;
+    const saved = Boolean(watchlistQuery.data?.has(key));
+    const setPending = (on: boolean) =>
+      setWlPending((prev) => {
+        const next = new Set(prev);
+        if (on) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    const setSaved = (on: boolean) =>
+      queryClient.setQueryData<Set<string>>(watchlistKey, (prev) => {
+        const next = new Set(prev);
+        if (on) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    setPending(true);
+    try {
+      if (saved) {
+        await api(`/api/account/watchlist/${encodeURIComponent(provider)}/${encodeURIComponent(showId)}`, {
+          method: "DELETE",
+        });
+        setSaved(false);
+        toast("Removed from watchlist.");
+      } else {
+        await api("/api/account/watchlist", { method: "POST", body: { provider, show_id: showId } });
+        setSaved(true);
+        toast("Added to watchlist! ✓");
+      }
+    } catch (err) {
+      toast(`Could not update watchlist: ${err instanceof Error ? err.message : String(err)}`, "error");
+    } finally {
+      setPending(false);
     }
   }
 
@@ -773,7 +842,13 @@ export default function HomePage(): JSX.Element {
     <>
       <TopNav id="mainNav" active="home" className={solid ? "solid" : undefined} />
 
-      <Hero hero={hero} provider={active} prefs={prefs} onWatchlist={(id) => void addToWatchlist(id)} />
+      <Hero
+        hero={hero}
+        provider={active}
+        prefs={prefs}
+        watchlist={watchlistState}
+        onWatchlist={(id) => void toggleWatchlist(id)}
+      />
 
       <ProviderBar families={families} active={active} onSelect={selectProvider} />
 

@@ -15,6 +15,7 @@ import type {
 } from "../models/Provider.js";
 import type { Database } from "../../database/db.js";
 import { appBaseUrl } from "../../version.js";
+import { fetchTmdbRating } from "../../services/tmdb-import.service.js";
 import type { ProviderModule } from "../models/ProviderRegistry.js";
 
 type VideoServer = { id: string; name: string; src: string };
@@ -104,6 +105,7 @@ interface LocalTitleRow {
   runtime: number | null;
   genres: string[];
   imdb_id: string | null;
+  tmdb_id: number | null;
   adult: boolean;
   file_id: string | null;
 }
@@ -267,6 +269,15 @@ export class LocalProvider
    * only falls back when the result has no title. An id of the other kind is
    * that probe missing, not an error — matches `TmdbProvider.getMovie`.
    */
+  /**
+   * The title's score, looked up live from TMDB by its `tmdb_id` — nothing is
+   * stored for it. Detail reads only: a listing would be one TMDB request per
+   * card, and `WebPlatformHandler` already caches a detail read for an hour.
+   */
+  private liveRating(row: LocalTitleRow): Promise<number | null> {
+    return row.tmdb_id ? fetchTmdbRating(row.media_type, row.tmdb_id) : Promise.resolve(null);
+  }
+
   public override async getMovie(id: string): Promise<Movie> {
     const ref = parseRef(id);
     if (!ref || ref.kind !== "movie") return new Movie();
@@ -277,7 +288,9 @@ export class LocalProvider
     );
     if (!row) return new Movie();
 
-    return this.toMovie(row);
+    const movie = this.toMovie(row);
+    movie.rating = await this.liveRating(row);
+    return movie;
   }
 
   public override async getTvShow(id: string): Promise<TvShow> {
@@ -291,6 +304,7 @@ export class LocalProvider
     if (!row) return new TvShow();
 
     const tvShow = this.toTvShow(row);
+    tvShow.rating = await this.liveRating(row);
     const seasonRows = await this.db.all<LocalSeasonRow>(
       `SELECT * FROM local_seasons WHERE title_id = $1 ORDER BY number ASC`,
       [ref.id],

@@ -58,7 +58,12 @@ export class IdleShutdownService {
     const settings = await this.settingsService.getPowerSettings();
     const now = Date.now();
 
-    const lastActivityMs = (await this.redis.get<number>(LAST_ACTIVITY_KEY)) ?? this.bootTimeMs;
+    // Floor at process start: the Redis value outlives reboots, so a stale
+    // timestamp from before the box was powered off must not count as idle time.
+    const lastActivityMs = Math.max(
+      (await this.redis.get<number>(LAST_ACTIVITY_KEY)) ?? 0,
+      this.bootTimeMs
+    );
     const idleSeconds = Math.max(0, Math.floor((now - lastActivityMs) / 1000));
     const uptimeSeconds = Math.max(0, Math.floor((now - this.bootTimeMs) / 1000));
 

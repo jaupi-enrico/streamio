@@ -28,10 +28,7 @@ export interface Room {
   members: { id: string }[];
 }
 
-/**
- * The room's watch page. The watch page isn't ported yet, so this is the
- * vanilla one — which is also where anyone already in the room is.
- */
+/** The room's watch page — this app's watch page. */
 export function watchUrl(room: Pick<Room, "code" | "state">): string {
   const params = new URLSearchParams({ id: room.state.showId, room: room.code });
   if (room.state.provider) params.set("provider", room.state.provider);

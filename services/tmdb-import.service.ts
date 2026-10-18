@@ -46,6 +46,33 @@ function requireApiKey(): void {
   }
 }
 
+const RATING_TIMEOUT_MS = 4_000;
+
+/**
+ * A title's current TMDB score (vote_average, one decimal), read live rather
+ * than snapshotted so it tracks TMDB. Fail-silent: no key, a slow or failed
+ * lookup, or a title nobody has voted on all answer null — a detail page must
+ * never wait on or break over a score.
+ */
+export async function fetchTmdbRating(mediaType: "movie" | "tv", tmdbId: number): Promise<number | null> {
+  if (!process.env.TMDB_API_KEY) return null;
+  try {
+    const lookup = mediaType === "movie"
+      ? TMDb3.Movies.details(tmdbId)
+      : TMDb3.TvSeries.details(tmdbId);
+    const details: any = await Promise.race([
+      lookup,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), RATING_TIMEOUT_MS).unref()),
+    ]);
+    const avg = details?.vote_average;
+    // A zero average with no votes behind it means "unrated", not 0/10.
+    if (typeof avg !== "number" || !details?.vote_count) return null;
+    return Math.round(avg * 10) / 10;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchTmdbMovieSnapshot(tmdbId: number): Promise<TmdbTitleSnapshot> {
   requireApiKey();
   const details = await TMDb3.Movies.details(tmdbId, { appendToResponse: ["external_ids"] });

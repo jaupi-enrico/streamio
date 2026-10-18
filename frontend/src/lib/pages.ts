@@ -5,18 +5,14 @@
  * non-UI modules — auth.ts's redirect to /login, for one — can ask "is this
  * page here?" without importing every page.
  *
- * While the migration runs, a page exists in one of three places:
- *  - here, under /preview, as soon as it is ported;
- *  - here, on the live site, once it is listed in REACT_PAGES;
- *  - only in the vanilla frontend otherwise.
- * `pageHref()` picks the right one, so a preview page links to other preview
- * pages where they exist and falls back to the old page where they don't.
+ * Every page lives here now, on the live site; a path that is
+ * not listed is not a page of this site and gets a plain link.
  */
-import { appPageHref, config, isPreview, oldPageHref } from "./base";
+import { appPageHref, oldPageHref } from "./base";
 
 /**
- * Page key → the path(s) it serves. The key is what REACT_PAGES lists and
- * must match `PublicPage` names in routes/public.router.ts.
+ * Page key → the path(s) it serves. Keys match `PublicPage` names in
+ * routes/public.router.ts.
  */
 export const IMPLEMENTED_PAGES: Record<string, readonly string[]> = {
   login: ["/login", "/auth/callback"],
@@ -47,14 +43,12 @@ export function pageForPath(pathname: string): string | null {
 
 /** Whether a link to `path` can stay inside this app (client-side routing). */
 export function isInApp(path: string): boolean {
-  const page = pageForPath(path.split(/[?#]/)[0] ?? "/");
-  if (!page) return false;
-  return isPreview || config.livePages.includes(page);
+  return pageForPath(path.split(/[?#]/)[0] ?? "/") !== null;
 }
 
 /**
  * Full href for a page path ("/details?id=…"): this app's copy when it has
- * one, the vanilla page otherwise.
+ * one, a plain root-relative link otherwise.
  */
 export function pageHref(path: string): string {
   return isInApp(path) ? appPageHref(path) : oldPageHref(path);

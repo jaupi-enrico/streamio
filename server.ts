@@ -6,7 +6,6 @@ import { UnknownProviderError, ProviderDisabledError, ProviderTimeoutError } fro
 import { createContentRouter } from "./routes/content.router.js";
 import { createHealthRouter } from "./routes/health.router.js";
 import { createPublicRouter } from "./routes/public.router.js";
-import { createPreviewRouter } from "./routes/preview.router.js";
 import { createProviderRouter } from "./routes/provider.router.js";
 import { createAuthRouter } from "./routes/auth.router.js";
 import { createAccountRouter } from "./routes/account.router.js";
@@ -185,7 +184,6 @@ export class WebServer {
   }
 
   private setupRoutes() {
-    this.app.use(express.static(path.join(process.cwd(), "public")));
     // Under /api deliberately, even though it serves files rather than JSON:
     // a reverse proxy in front of an install may only proxy /api/* and
     // 302-redirect everything else, and a 302 has no
@@ -219,10 +217,7 @@ export class WebServer {
         },
       }),
     );
-    // The React frontend, side by side with the vanilla pages above it until
-    // each page is switched over (frontend/, routes/preview.router.ts).
-    this.app.use("/preview",       createPreviewRouter(this.db, this.redis, this.platformHandler));
-    this.app.use("/",              createPublicRouter(this.redis));
+    this.app.use("/",              createPublicRouter(this.redis, this.platformHandler));
     this.app.use("/health",        createHealthRouter());
     this.app.use("/api/version",   createVersionRouter(this.db, this.redis));
     this.app.use("/api/auth",      createAuthRouter(this.db, this.redis));

@@ -427,10 +427,14 @@ interface LibraryState {
 async function loadLibraryState(provider: string, showId: string): Promise<LibraryState> {
   const p = encodeURIComponent(provider);
   const id = encodeURIComponent(showId);
-  const [watchlist, fav, rating] = await Promise.all([
-    api<{ provider: string; show_id: string }[]>("/api/account/watchlist"),
-    api<{ favorite?: boolean }>(`/api/account/favorites/${p}/${id}`),
-    api<{ rating?: number | null }>(`/api/account/ratings/${p}/${id}`),
+  // Settled one by one, as on the vanilla page: the rating lookup answers 404
+  // for a title never rated, and that must not cost the other two buttons
+  // their state. The favourite and rating are only asked once the watchlist
+  // answered, which is when the vanilla page asked them.
+  const watchlist = await api<{ provider: string; show_id: string }[]>("/api/account/watchlist");
+  const [fav, rating] = await Promise.all([
+    api<{ favorite?: boolean }>(`/api/account/favorites/${p}/${id}`).catch(() => null),
+    api<{ rating?: number | null }>(`/api/account/ratings/${p}/${id}`).catch(() => null),
   ]);
   return {
     inWatchlist: (watchlist || []).some((i) => i.provider === provider && i.show_id === showId),

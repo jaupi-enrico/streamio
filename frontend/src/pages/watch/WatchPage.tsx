@@ -6,10 +6,10 @@
  * and read here through a snapshot. The markup is watch.html's, ids and
  * classes unchanged, so the verbatim stylesheet applies as-is.
  *
- * Built in steps. Done: the show header, the episode list and grid, the
- * server list, playback, progress/resume and the player controls
- * (PlayerChrome/controls.ts). Skip segments, the next-episode prompt, rooms,
- * Cast and download follow.
+ * Around the session: the player controls (controls.ts, PlayerChrome), the
+ * skip/next-episode prompts (upnext.ts), watch parties (room.ts), Cast
+ * (cast.ts) and download (download.ts), each with its own snapshot; their
+ * panels are in Panels.tsx.
  */
 import {
   useEffect,
@@ -38,6 +38,7 @@ import {
   type EpisodeCard,
 } from "./logic/episodes";
 import { PlayerChrome, ShortcutsModal } from "./PlayerChrome";
+import { WatchPanels } from "./Panels";
 import { WatchSession, type WatchShow, type WatchSnapshot } from "./session";
 import { useShareModal } from "../../components/social/ShareModal";
 import "./watch.css";
@@ -153,7 +154,7 @@ function WatchView({ showId }: { showId: string }): JSX.Element {
         </div>
       </div>
 
-      <StaticPanels />
+      <WatchPanels session={session} />
       <ShortcutsModal session={session} />
 
       {/* CONTENT */}
@@ -475,118 +476,5 @@ function EpisodeChip({ ep, cls, width, onClick, ref }: EpisodeButtonProps): JSX.
       <span className="epbtn-label">{String(ep.episodeNum)}</span>
       <span className="epbtn-progress" style={width ? { width } : undefined} />
     </button>
-  );
-}
-
-/** Room panel, Cast panel and download toast — wired in later steps. */
-function StaticPanels(): JSX.Element {
-  return (
-    <>
-      <div className="room-panel" id="roomPanel">
-        <div className="room-panel-header">
-          <span>Watch Party</span>
-          <button className="room-panel-close" id="roomPanelClose">
-            ✕
-          </button>
-        </div>
-        <div className="room-panel-body" id="roomPanelBody" />
-      </div>
-      <div className="room-toast" id="roomToast" />
-
-      <div className="cast-panel" id="castPanel">
-        <div className="cast-panel-header">
-          <span id="castDeviceName">Casting</span>
-          <button className="room-panel-close" id="castPanelClose">
-            ✕
-          </button>
-        </div>
-        <div className="cast-panel-body">
-          <div className="cast-now">
-            <img id="castNowPoster" alt="" />
-            <div className="cast-now-text">
-              <div className="cast-now-title" id="castNowTitle" />
-              <div className="cast-now-sub" id="castNowSub" />
-            </div>
-          </div>
-          <div className="cast-seek">
-            <div className="cast-bar" id="castBar">
-              <div id="castBarFill" />
-            </div>
-            <div className="cast-times">
-              <span id="castElapsed">0:00</span>
-              <span id="castDuration">0:00</span>
-            </div>
-          </div>
-          <div className="cast-row">
-            <button className="cast-ctl" id="castPrevBtn" title="Previous episode">
-              <svg className="icon-svg" viewBox="0 0 24 24">
-                <polygon points="19 20 9 12 19 4 19 20" />
-                <line x1="5" y1="19" x2="5" y2="5" />
-              </svg>
-            </button>
-            <button className="cast-ctl" id="castBack10Btn" title="Back 10 seconds">
-              <svg className="icon-svg" viewBox="0 0 24 24">
-                <polygon points="11 19 2 12 11 5 11 19" />
-                <polygon points="22 19 13 12 22 5 22 19" />
-              </svg>
-            </button>
-            <button className="cast-ctl cast-ctl-main" id="castPlayBtn" title="Play / pause">
-              <svg className="icon-svg" viewBox="0 0 24 24">
-                <line x1="6" y1="4" x2="6" y2="20" />
-                <line x1="18" y1="4" x2="18" y2="20" />
-              </svg>
-            </button>
-            <button className="cast-ctl" id="castFwd10Btn" title="Forward 10 seconds">
-              <svg className="icon-svg" viewBox="0 0 24 24">
-                <polygon points="13 19 22 12 13 5 13 19" />
-                <polygon points="2 19 11 12 2 5 2 19" />
-              </svg>
-            </button>
-            <button className="cast-ctl" id="castNextBtn" title="Next episode">
-              <svg className="icon-svg" viewBox="0 0 24 24">
-                <polygon points="5 4 15 12 5 20 5 4" />
-                <line x1="19" y1="5" x2="19" y2="19" />
-              </svg>
-            </button>
-          </div>
-          <button className="room-btn" id="castSkipSegmentBtn" hidden>
-            Skip
-          </button>
-          <div className="cast-row cast-volume-row">
-            <button className="cast-ctl" id="castMuteBtn" title="Mute">
-              <svg className="icon-svg" viewBox="0 0 24 24">
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
-              </svg>
-            </button>
-            <input type="range" id="castVolume" min="0" max="100" defaultValue="100" />
-          </div>
-          <label className="cast-toggle">
-            <input type="checkbox" id="castAutoplayNext" defaultChecked />
-            Autoplay next episode
-          </label>
-          <select className="cast-select" id="castEpisodeSelect" />
-          <select className="cast-select" id="castSubtitleSelect" />
-          <select className="cast-select" id="castAudioSelect" hidden />
-          <button className="room-btn danger" id="castDisconnectBtn">
-            Stop casting
-          </button>
-        </div>
-      </div>
-
-      <div className="download-toast" id="downloadToast">
-        <div className="download-toast-title">
-          <span>Downloading...</span>
-          <button className="toast-close">✕</button>
-        </div>
-        <div className="download-bar">
-          <div className="download-bar-fill" id="downloadBarFill" />
-        </div>
-        <div className="download-status" id="downloadStatus">
-          0%
-        </div>
-      </div>
-
-    </>
   );
 }

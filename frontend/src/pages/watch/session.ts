@@ -41,6 +41,10 @@ import {
 import type { StreamPayload } from "./logic/stream";
 import { PlayerControls } from "./controls";
 import { PlayerEngine } from "./player-engine";
+import { UpNext } from "./upnext";
+import { RoomSync } from "./room";
+import { CastController } from "./cast";
+import { Downloader } from "./download";
 import type { ShareContent } from "../../components/social/ShareModal";
 import type { ShowDetails } from "../../lib/types";
 
@@ -165,6 +169,12 @@ export class WatchSession {
   openShare: (content: ShareContent) => void = () => {};
 
   readonly controls: PlayerControls;
+  readonly upNext: UpNext;
+  readonly room: RoomSync;
+  readonly cast: CastController;
+  readonly download: Downloader;
+  /** Joining a paused room keeps the first stream paused through its autoplay. */
+  pendingRoomPause = false;
 
   constructor(video: HTMLVideoElement, showId: string) {
     this.engine = new PlayerEngine(video);
@@ -190,6 +200,145 @@ export class WatchSession {
       },
       mediaArtwork: () => [this.snap.show?.poster, this.snap.show?.banner].filter((s): s is string => Boolean(s)),
     });
+
+    this.upNext = new UpNext({
+      player: video,
+      get prefs() {
+        return session.prefs;
+      },
+      get casting() {
+        return session.casting;
+      },
+      get playbackId() {
+        return session.playbackId;
+      },
+      get playbackType() {
+        return session.playbackType;
+      },
+      get showId() {
+        return session.showId;
+      },
+      get showTitle() {
+        return session.snap.show?.title || "";
+      },
+      get showImdbId() {
+        return session.snap.show?.imdbId || "";
+      },
+      get showReleased() {
+        return session.snap.show?.released || "";
+      },
+      get autoplayNextEnabled() {
+        return session.autoplayNextEnabled;
+      },
+      set autoplayNextEnabled(v) {
+        session.autoplayNextEnabled = v;
+      },
+      currentEpisode: () => this.snap.episodes[this.snap.episodeIndex],
+      nextEpisode: () => this.snap.episodes[this.snap.episodeIndex + 1],
+      playNextEpisode: () => void this.playNextEpisode(),
+      markCurrentPlaybackDone: () => this.markCurrentPlaybackDone(),
+    });
+
+    this.room = new RoomSync({
+      player: video,
+      get casting() {
+        return session.casting;
+      },
+      get showId() {
+        return session.showId;
+      },
+      get playbackId() {
+        return session.playbackId;
+      },
+      get playbackType() {
+        return session.playbackType;
+      },
+      get episodeLabel() {
+        return session.episodeLabel;
+      },
+      get episodes() {
+        return session.snap.episodes;
+      },
+      get serverCount() {
+        return session.snap.servers.length;
+      },
+      selectEpisodeByData: (ep, index) => this.selectEpisodeByData(ep, index),
+      loadServersForId: (id, type) => this.loadServersForId(id, type),
+      playServerAt: (index, highlight) => this.playServerAt(index, highlight),
+      setJoinTarget: (episodeId, seconds) => {
+        if (episodeId) this.deepLinkEpisodeId = episodeId;
+        this.deepLinkTimeSeconds = seconds;
+      },
+      get pendingRoomPause() {
+        return session.pendingRoomPause;
+      },
+      set pendingRoomPause(v) {
+        session.pendingRoomPause = v;
+      },
+    });
+
+    this.cast = new CastController({
+      player: video,
+      get container() {
+        return session.controls.ui.container;
+      },
+      get showId() {
+        return session.showId;
+      },
+      get show() {
+        return session.snap.show;
+      },
+      get playbackId() {
+        return session.playbackId;
+      },
+      get playbackType() {
+        return session.playbackType;
+      },
+      get episodeLabel() {
+        return session.episodeLabel;
+      },
+      get episodes() {
+        return session.snap.episodes;
+      },
+      get episodeIndex() {
+        return session.snap.episodeIndex;
+      },
+      get serverName() {
+        return session.serverName;
+      },
+      get serverIndex() {
+        return session.serverIndex;
+      },
+      get introIds() {
+        return session.upNext.introDbIds;
+      },
+      get heading() {
+        return session.snap.heading;
+      },
+      get inRoom() {
+        return session.room.code !== null;
+      },
+      get autoplayNextEnabled() {
+        return session.autoplayNextEnabled;
+      },
+      set autoplayNextEnabled(v) {
+        session.autoplayNextEnabled = v;
+      },
+      showPlayerMessage: (msg) => this.showPlayerMessage(msg),
+      saveProgress: (completed, override) => void this.saveProgress(completed, override),
+      onReceiverEpisode: (id, label) => this.onReceiverEpisode(id, label),
+      roomToast: (msg) => this.room.showToast(msg),
+    });
+
+    this.download = new Downloader({
+      manifestUrl: () => this.engine.hls?.url || this.engine.videoUrl || null,
+      title: () => this.snap.heading,
+    });
+  }
+
+  /** The page is a remote for a Cast device; the local element is paused and dimmed. */
+  get casting(): boolean {
+    return this.cast.isCasting;
   }
 
   // ── Store plumbing ──
@@ -239,11 +388,15 @@ export class WatchSession {
     if (this.disposed) return;
     // Leaving the page in-app never fires beforeunload; save the same way.
     this.saveOnLeave();
+    this.cast.dispose(); // saves the TV's position, as beforeunload did
     this.disposed = true;
     for (const c of this.cleanups) c();
     this.cleanups = [];
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
+    this.upNext.dispose();
+    this.room.dispose();
+    this.download.dispose();
     this.controls.dispose();
     this.engine.destroy();
     this.listeners.clear();
@@ -275,6 +428,7 @@ export class WatchSession {
    */
   async start(): Promise<void> {
     this.wireProgressSaving();
+    void this.cast.init();
     await ensureSessionQuietly();
     if (this.disposed) return;
     this.prefs = await loadPreferences();
@@ -319,7 +473,14 @@ export class WatchSession {
     this.deepLinkTimeSeconds = tParam !== null && !isNaN(parseInt(tParam, 10)) ? parseInt(tParam, 10) : null;
     this.deepLinkTimeConsumed = false;
 
+    // Before anything reads the stored provider — and before the room join,
+    // which may override it with the room's.
     await this.ensureActiveProvider();
+    if (this.disposed) return;
+
+    // May replace the deep-link episode/time with the room's shared state,
+    // and holds back broadcasting until the initial pick below has settled.
+    await this.room.initRoomJoin();
     if (this.disposed) return;
 
     if (!showId) {
@@ -356,6 +517,8 @@ export class WatchSession {
       if (this.disposed) return;
       this.set({ error: `Error: ${(err as Error).message}` });
       this.showPlayerMessage("Error loading content");
+    } finally {
+      this.room.releaseJoinGuard();
     }
   }
 
@@ -459,7 +622,8 @@ export class WatchSession {
   /**
    * History writes: every 30s while playing, on pause, when leaving, and
    * once as completed when playback reaches the tail. `ended` advances to
-   * the next episode when autoplay is on.
+   * the next episode when autoplay is on. While casting the local element is
+   * frozen and the Cast controller writes history instead.
    */
   private wireProgressSaving(): void {
     const player = this.player;
@@ -469,14 +633,20 @@ export class WatchSession {
     };
 
     const interval = setInterval(() => {
+      if (this.casting) return;
       if (!this.markedDone && !player.paused) void this.saveProgress(false);
     }, 30_000);
     this.cleanups.push(() => clearInterval(interval));
 
     on("pause", () => {
+      if (this.casting) return;
       if (!this.markedDone) void this.saveProgress(false);
     });
     on("ended", () => {
+      // The receiver advances on its own while casting; the hidden local
+      // player doing it too would fight it over what plays on the TV.
+      if (this.casting) return;
+      this.upNext.hideNextEpPrompt();
       this.markCurrentPlaybackDone(); // covers movies/last episode, where playNextEpisode no-ops
       void this.playNextEpisode();
     });
@@ -484,15 +654,22 @@ export class WatchSession {
     // the last seconds often fires no "ended" at all.
     on("timeupdate", () => {
       if (isEffectivelyFinished(player.duration, player.currentTime)) this.markCurrentPlaybackDone();
+      this.upNext.onTimeUpdate();
     });
 
-    const onUnload = (): void => this.saveOnLeave();
+    const onUnload = (): void => {
+      if (this.casting) {
+        this.cast.saveCastProgress(false);
+        return;
+      }
+      this.saveOnLeave();
+    };
     window.addEventListener("beforeunload", onUnload);
     this.cleanups.push(() => window.removeEventListener("beforeunload", onUnload));
   }
 
   private saveOnLeave(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.casting) return;
     if (!this.markedDone && !this.player.paused) void this.saveProgress(false);
   }
 
@@ -501,6 +678,7 @@ export class WatchSession {
    * paths and skip-to-end: each means the viewer is done with it.
    */
   markCurrentPlaybackDone(): void {
+    if (this.casting) return; // the receiver reports its own progress
     if (this.markedDone) return;
     this.markedDone = true;
     void this.saveProgress(true);
@@ -647,8 +825,19 @@ export class WatchSession {
     await this.selectEpisodeByData(ep, index);
   }
 
-  /** Skip intro/recap/credits — wired with the skip segments step. */
-  skipSegment(): void {}
+  /** The S key: the Skip button's action, when it is showing. */
+  skipSegment(): void {
+    this.upNext.skipIfShown();
+  }
+
+  /** The receiver advanced by itself: the grid follows what's on the TV. */
+  private onReceiverEpisode(episodeId: string, label: string): void {
+    const idx = this.snap.episodes.findIndex((e) => e.id === episodeId);
+    if (idx === -1) return;
+    this.playbackId = episodeId;
+    this.episodeLabel = label;
+    this.set({ episodeIndex: idx });
+  }
 
   /** The Share button: the title, or the episode, seeded with a 30s clip around the playhead. */
   shareCurrent(): void {
@@ -789,6 +978,7 @@ export class WatchSession {
       if (this.disposed) return;
       if (!res.ok || !payload.data) throw new Error(payload.error || `HTTP ${res.status}`);
       this.playResolvedStream(payload.data);
+      this.room.broadcastContentChange();
     } catch (err) {
       if (this.disposed) return;
       this.showPlayerMessage(`Error: ${(err as Error).message}`);
@@ -821,6 +1011,10 @@ export class WatchSession {
   private playResolvedStream(stream: StreamPayload): void {
     this.cleanupPlayer();
     this.markedDone = false;
+    this.upNext.onNewStream();
+    this.cast.setMedia(stream);
+    // Already casting: a change made on the page plays on the TV.
+    if (this.cast.playOnReceiver()) return;
 
     const engine = this.engine;
     const url = engine.playableUrl(stream);
@@ -831,6 +1025,12 @@ export class WatchSession {
     engine.videoUrl = url;
     this.showPlayer();
     const player = this.player;
+
+    // A room joined paused stays paused through the autoplay below.
+    if (this.pendingRoomPause) {
+      this.pendingRoomPause = false;
+      player.addEventListener("playing", () => player.pause(), { once: true });
+    }
 
     engine.clearSubtitleTracks();
     const subs = stream?.subtitles || stream?.captions || [];

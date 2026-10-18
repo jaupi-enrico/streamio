@@ -9,7 +9,7 @@ contracts.
 
 ## Project
 
-Streamio — a Node/Express backend + static server-rendered `public/` frontend that serves the
+Streamio — a Node/Express backend + React (`frontend/`) frontend that serves the
 user's own uploaded movies and shows (this build has no scraped/third-party content sources — see
 "Layering" below), normalizes them, and resolves playable HLS URLs. Also runs a full account
 system: auth, watchlist/favorites/ratings/history, social (follow, share+reactions), and
@@ -42,12 +42,11 @@ Run from repo root (`web/`) unless noted.
 
 No dev-server hot-reload from TS source; compile before `dev`/`start` pick up changes.
 
-React frontend (`frontend/`, being migrated alongside `public/` — see "Frontend (`frontend/`)"):
+React frontend (`frontend/`, the only frontend — see "Frontend (`frontend/`)"):
 `npm run build` also builds it into `dist/frontend`; `npm run typecheck:frontend` (strict, not
-covered by the root `npx tsc --noEmit`); `npm run dev:frontend` (Vite on :5173, `/preview/*` hot
-reloaded, everything else proxied to Express on :8080 — run it next to `watch` + `dev`);
-`npm run test:frontend` (vitest) and `npm run test:frontend-parity` (the vanilla helpers vs their
-ports). The frontend imports the backend's types from `dist/*.d.ts`, so build the backend once
+covered by the root `npx tsc --noEmit`); `npm run dev:frontend` (Vite on :5173, hot
+reloaded, `/api`/`/ws` proxied to Express on :8080 — run it next to `watch` + `dev`);
+`npm run test:frontend` (vitest). The frontend imports the backend's types from `dist/*.d.ts`, so build the backend once
 before type-checking it on a fresh clone.
 
 Server start applies pending DB migrations first — no separate migrate command, no running
@@ -105,7 +104,7 @@ as build args. `db` has **no** `docker-entrypoint-initdb.d` mount — the app mi
   - `sync.router.ts` (`/api/sync`) exposes the peer pull endpoint (`GET /export`), gated by
     shared-secret (`requireHostingPointSecret`), not user auth.
   - `room.router.ts` (`/api/rooms`) — watch-party create/get/join/leave/close, all `requireAuth`.
-  - `public.router.ts` serves static frontend pages (`public/*.html`); static assets via
+  - `public.router.ts` serves the React app shell for every page route; bundle files via
     `express.static("public")`.
 - **`PlatformHandler.ts`** — `WebPlatformHandler extends PlatformHandler`
   (`core/models/PlatformHandler.ts`): the caching layer. Every content method (`getHome`,
@@ -211,6 +210,11 @@ as build args. `db` has **no** `docker-entrypoint-initdb.d` mount — the app mi
   `safeFetch` still chases redirects by hand so it can report the URL that actually served the
   body, which is what a relative manifest URI resolves against.
   `ALLOW_PRIVATE_UPSTREAM=1` opts a LAN-only install out of the address check.
+  **A lookup that fails is not a block**: `resolveHost` retries it, then falls back to the
+  host's last validated answer (kept 10 min past its TTL), and only then throws
+  `HostResolutionError` — which `/api/cast-proxy` answers with a retryable **502**. Reporting it
+  as `BlockedUrlError` (a 400) made the Cast receiver drop a playing stream with error 301 on a
+  single dropped query from Docker's embedded resolver.
   `npm run test:ssrf` covers the classifier, the pinning and the rebinding case.
 - **`core/utils/`** — `TMDb3.ts` (a plain TMDB v3 API client) backs
   `services/tmdb-import.service.ts`'s admin "fill in from a TMDB id" flow when adding a local
@@ -339,10 +343,11 @@ everyone.
   `#roomBtn`. `details.html`'s "Watch Party" button creates a room and deep-links to
   `/watch?...&room=<code>`; `/rooms` is the join-by-code landing page.
 
-### Frontend (`public/`)
+### Legacy vanilla frontend (`public/`) — deleted
 
-Plain static HTML/CSS/JS, no build step/framework, served via `public.router.ts`/
-`express.static`. One HTML/CSS/JS trio per page: `home`, `catalog`, `search`, `providers`,
+The old static HTML/CSS/JS pages are gone (a ported copy of every page lives in `frontend/`; the
+notes below describe behaviour that was carried over, and the `public/scripts/*.js` names in
+comments are references to the deleted originals). It had one HTML/CSS/JS trio per page: `home`, `catalog`, `search`, `providers`,
 `details`, `watch` (hls.js, vendored), `rooms`, `account`, `login`, `verify-email`,
 `reset-password`, `tv` (TV sign-in phone half). `auth.js`/`social.js` hold cross-page helpers.
 
@@ -373,6 +378,12 @@ work; a hard-coded `px` font size opts that element out. The one server-enforced
 it's plain `http://` on an https page (mixed content) or the resolved payload carries `headers`
 that only a server-side fetch can attach. `/api/cast-proxy` fetches server-side with a fixed
 Referer/UA and rewrites every nested manifest URI to stay looped through the proxy.
+**It retries flaky upstreams itself**, because the Cast receiver abandons a segment (error 301)
+after a few failures that a fresh connection would have fixed: first-byte time is bounded per
+attempt (8s × 3, under the players' 30s TTFB budget — then 504), 5xx/stalls/resets are retried,
+and a segment body that dies mid-transfer is resumed with a `Range` request from the first unsent
+byte and spliced onto the same response. Out of resumes, the socket is destroyed rather than
+ended, so the player sees a network error, never a short body it would take as complete.
 
 Blocks toggled with `el.hidden` need a `[hidden] { display: none }` guard whenever their own
 rule sets `display` — a `.thing { display: flex }` outranks the UA's `[hidden]` rule, and the
@@ -397,14 +408,12 @@ share inbox is a zero-click token steal against whoever *looks* at it. Prefer `t
 construction where there's a choice; `renderHero`'s avatar is built as DOM because its fallback
 was an inline `onerror` with a user string interpolated into it.
 
-### Frontend (`frontend/`) — React migration in progress
+### Frontend (`frontend/`)
 
-React 19 + Vite + strict TS + React Router + TanStack Query, built **next to** `public/`, which
-stays the live site and must not be edited as part of the migration. Served at `/preview/*`
-(`routes/preview.router.ts`, 404 until built) so each page can be compared side by side with its
-vanilla original; same origin, so one session and the same localStorage keys serve both. Nothing
-switches over without explicit approval (planned: a `REACT_PAGES` list read by
-`public.router.ts`, reverted by removing the entry).
+React 19 + Vite + strict TS + React Router + TanStack Query. `public.router.ts` serves its shell for
+every page (mount `""`, bundle files at `/assets`, `/vendor`, `/icons` via `frontendAssets()`; 503
+until `npm run build` has produced `dist/frontend`). The old
+admin-only `/preview` mount is gone.
 
 - **Mount from the server, prefix from the browser.** `routes/frontend-app.ts` renders the built
   `index.html` with an inline boot script that writes `window.__STREAMIO_CONFIG__` and a
@@ -420,14 +429,22 @@ switches over without explicit approval (planned: a `REACT_PAGES` list read by
   `usePageScope()` sets the attribute. Class names match the vanilla DOM. `#root` is
   `display: contents` because the vanilla pages lay out `<body>`'s own children.
 - **`lib/auth.ts`, `lib/preferences.ts`, `lib/show-meta.ts`, `lib/provider-names.ts` are ports**
-  of the vanilla helpers and must stay behaviourally identical while both live —
-  `src/lib/parity.test.ts` loads the originals and compares. Preferences are applied in `main.tsx`
+  of the former vanilla helpers (now deleted, so there is no parity test). Preferences are applied in `main.tsx`
   before React renders; the high-contrast rule also matches `:root.high-contrast[data-page]` to beat
   the scoped palettes.
 - GETs go through `usePublicQuery`/`useAuthedQuery` (`lib/api.ts`). `POST
   /api/episodes/:id/video` is never a query — resolved streams are not cached client-side.
 - Other accounts' strings render as JSX text; no `dangerouslySetInnerHTML` with user content
   (icons are generated JSX components for that reason).
+- **The watch page is controllers outside React** (`src/pages/watch/`): `WatchSession` (session.ts)
+  owns the page state and wires `PlayerEngine` (hls.js), `PlayerControls` (the custom player),
+  `UpNext` (skip segments + next-episode prompt), `RoomSync` (watch parties, same wire format as
+  `room-sync.js`), `CastController` (CAF sender; `cast-sdk.ts` loads the SDK once per document) and
+  `Downloader`; each has its own snapshot store (`store.ts`). The pure parts — the Cast LOAD payload
+  (`logic/cast.ts`, contentType test included), the HLS downloader's parsers, shortcuts — are
+  unit-tested. ffmpeg.wasm is imported only on Download; its worker must be a same-origin file, so
+  it's copied into `frontend/public/vendor/ffmpeg` (keep it in step with the `@ffmpeg/ffmpeg`
+  version).
 
 ### Versioning and updates
 
@@ -535,7 +552,7 @@ described in `app/CLAUDE.md`.
   screen becomes account takeover. `/device/token` returns **200** for both pending and
   ready-session, **410** for expired/redeemed. Approved records get a shorter TTL than pending —
   from approval to redemption it's worth a session. `npm run test:device-login` covers the code
-  helpers incl. alphabet parity with `public/scripts/tv.js`.
+  helpers incl. alphabet parity with `frontend/src/pages/tv/device-code.ts`.
 - **Only a rejected refresh token ends a session — except on reuse.** Refresh tokens rotate on
   use; `rotateRefreshToken` keeps a 60s grace window in Redis (`rtg:<hash>`) — a recently-retired
   token is still honored (client whose response was lost mid-rotation), but **only while its chain

@@ -2,8 +2,7 @@
  * Where this app is mounted, as told by the server.
  *
  * Written by the inline boot script Express puts in index.html
- * (routes/frontend-app.ts): whether this copy of the app is the side-by-side
- * preview ("/preview") or the live site (""), and the path prefix a reverse
+ * (routes/frontend-app.ts): the mount ("" on the live site) and the path prefix a reverse
  * proxy stripped — derived in the browser from where the page really is,
  * not from APP_URL, which can name a URL the browser is redirected away from.
  *
@@ -15,14 +14,8 @@
 export interface StreamioConfig {
   /** Reverse-proxy path prefix, no trailing slash: "" or "/streamio". */
   prefix: string;
-  /** "/preview" for the side-by-side copy, "" once switched over. */
+  /** Always "" on the live site. */
   mount: string;
-  /**
-   * Pages switched over to this app on the live site (REACT_PAGES). Only
-   * read when `mount` is "": the live copy may route client-side to these
-   * and nothing else.
-   */
-  livePages: string[];
 }
 
 declare global {
@@ -39,14 +32,11 @@ function readConfig(): StreamioConfig {
   const raw = (typeof window !== "undefined" && window.__STREAMIO_CONFIG__) || {};
   return {
     prefix: trimSlash(raw.prefix),
-    mount: raw.mount === undefined ? "/preview" : trimSlash(raw.mount),
-    livePages: Array.isArray(raw.livePages) ? raw.livePages.filter((p) => typeof p === "string") : [],
+    mount: trimSlash(raw.mount),
   };
 }
 
 export const config: StreamioConfig = readConfig();
-
-export const isPreview = config.mount !== "";
 
 /** React Router's basename: everything the router matches sits under it. */
 export const routerBasename = `${config.prefix}${config.mount}` || "/";
