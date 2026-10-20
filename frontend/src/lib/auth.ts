@@ -77,6 +77,18 @@ async function doRefresh(): Promise<RefreshAttempt> {
   return { token: null, dead: res.status === 401 || res.status === 403 };
 }
 
+/**
+ * Whether this tab has a session, turning the refresh cookie into an access
+ * token if need be. "none" only when the server rejected the refresh (no
+ * cookie, expired, revoked); "unreachable" for anything retryable.
+ */
+export async function restoreSession(): Promise<"ok" | "none" | "unreachable"> {
+  if (getAccessToken()) return "ok";
+  const attempt = await attemptRefresh();
+  if (attempt.token) return "ok";
+  return attempt.dead ? "none" : "unreachable";
+}
+
 /** A new access token from the refresh cookie, or null on any failure. */
 export async function refreshAccessToken(): Promise<string | null> {
   return (await attemptRefresh()).token;

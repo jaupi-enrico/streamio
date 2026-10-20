@@ -10,6 +10,7 @@ import { lazy, Suspense, type ComponentType, type JSX } from "react";
 import type { RouteObject } from "react-router";
 import { Shell } from "./Shell";
 import { NotPorted } from "./pages/NotPorted";
+import { RequireSession } from "./components/layout/RequireSession";
 import { IMPLEMENTED_PAGES } from "./lib/pages";
 
 // One chunk per page, so a page's stylesheet and code load only when visited.
@@ -59,10 +60,22 @@ const PAGE_ROUTES: Record<string, RouteObject[]> = {
   watch: [{ path: "/watch", element: page(WatchPage) }],
 };
 
+/** Reachable without an account: signing in, and the links mailed to one. */
+const PUBLIC_PAGES = new Set(["login", "verifyEmail", "resetPassword", "tv"]);
+
+const pagesWhere = (isPublic: boolean): RouteObject[] =>
+  Object.entries(PAGE_ROUTES)
+    .filter(([key]) => PUBLIC_PAGES.has(key) === isPublic)
+    .flatMap(([, r]) => r);
+
 export const routes: RouteObject[] = [
   {
     element: <Shell />,
-    children: [...Object.values(PAGE_ROUTES).flat(), { path: "*", element: <NotPorted /> }],
+    children: [
+      ...pagesWhere(true),
+      { element: <RequireSession />, children: pagesWhere(false) },
+      { path: "*", element: <NotPorted /> },
+    ],
   },
 ];
 
