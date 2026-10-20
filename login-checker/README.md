@@ -46,7 +46,8 @@ PartOf=graphical-session.target
 Type=simple
 WorkingDirectory=/path/to/web/login-checker
 ExecStart=/usr/bin/node dist/index.js
-Restart=on-failure
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=graphical-session.target
@@ -55,6 +56,10 @@ WantedBy=graphical-session.target
 ```bash
 systemctl --user enable --now login-checker
 ```
+
+`Restart=always`, not `on-failure`: a SIGTERM (e.g. a broad `pkill -f "node dist/index.js"`)
+counts as a clean exit, so `on-failure` would leave the beacon dead for the rest of the session
+while you're still logged in.
 
 **This only works if your compositor actually starts/stops `graphical-session.target`.** GNOME
 and KDE Plasma do this themselves; many minimal Wayland compositors (Hyprland, sway, etc.) do

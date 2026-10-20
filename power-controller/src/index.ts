@@ -9,6 +9,9 @@
 import "dotenv/config";
 import axios from "axios";
 import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const STREAMIO_URL = (process.env.STREAMIO_URL || "http://localhost:8080").replace(/\/+$/, "");
 const POWER_SECRET = process.env.POWER_CONTROLLER_SECRET || "";
@@ -17,8 +20,9 @@ const DRY_RUN = process.env.DRY_RUN === "true";
 
 // Optional: login-checker integration. If a user is logged into the host's
 // desktop session, idle-triggered auto-shutdown is paused (manual/admin
-// shutdown still always goes through). Left unset, this check is skipped
-// entirely and behavior is unchanged from before login-checker existed.
+// shutdown still always goes through). Left unset, only the logind check
+// below applies (Linux), and other platforms behave as before login-checker
+// existed.
 const LOGIN_CHECK_URL = (process.env.LOGIN_CHECK_URL || "http://127.0.0.1:3001").replace(/\/+$/, "");
 const LOGIN_CHECK_TOKEN = process.env.LOGIN_CHECK_TOKEN || "";
 
@@ -49,7 +53,41 @@ async function checkLoginRaw(): Promise<boolean> {
   }
 }
 
+// Independent presence signal on Linux: ask logind directly whether a local
+// graphical session is open. login-checker is a separate process that can die
+// mid-session without anyone noticing (a stray `pkill -f "node dist/index.js"`
+// once took it out and the box powered off with someone sitting at it);
+// logind can't, so a present user is still seen when the beacon is gone.
+async function hasLocalGraphicalSession(): Promise<boolean> {
+  if (process.platform !== "linux") return false;
+  try {
+    const { stdout } = await execFileAsync("loginctl", ["list-sessions", "--json=short"], {
+      timeout: 5_000,
+    });
+    const sessions: { session: string; class: string }[] = JSON.parse(stdout);
+    for (const { session, class: cls } of sessions) {
+      if (cls !== "user") continue; // skips greeters and the per-user manager session
+      const { stdout: out } = await execFileAsync(
+        "loginctl",
+        ["show-session", session, "-p", "Type", "-p", "Remote", "-p", "State"],
+        { timeout: 5_000 }
+      );
+      const props = Object.fromEntries(
+        out.trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)])
+      );
+      // A logged-out session can linger in "closing" while its processes exit.
+      if ((props.Type === "wayland" || props.Type === "x11") && props.Remote === "no" && props.State !== "closing") {
+        return true;
+      }
+    }
+  } catch (err: any) {
+    console.error(`[power-controller] logind check failed: ${err.message}`);
+  }
+  return false;
+}
+
 async function isUserLoggedIn(): Promise<boolean> {
+  if (await hasLocalGraphicalSession()) return true;
   if (!LOGIN_CHECK_TOKEN) return false;
 
   const online = await checkLoginRaw();
