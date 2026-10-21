@@ -79,7 +79,7 @@
     "playwright": "^1.61.1",
     "redis": "^6.0.0",
     "resend": "^6.14.0",
-    "theintrodb": "^3.2.0",
+    "theintrodb": "^4.0.0",
     "tough-cookie": "^6.0.1",
     "undici": "^7.29.0",
     "ws": "^8.21.1"
