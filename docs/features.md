@@ -149,7 +149,8 @@ credits, and preview — each with its own button label, and a segment whose end
 media" (a common shape for credits/preview) behaves like the next-episode action instead of just
 seeking to the last frame.
 
-TheIntroDB is keyed by TMDB/TVDB/IMDB id. A local title only has one when its `imdb_id` was filled
+TheIntroDB (API v4) is keyed by TVDB id, and resolves a TMDB or IMDB id to it server-side, reading
+season/episode in that id's own numbering. A local title only has one when its `imdb_id` was filled
 in — by hand, or via the admin "fill in from a TMDB id" flow
 (`services/tmdb-import.service.ts`) — so a title with neither an id nor one on file just never
 shows the button; there's no title-matching fallback for a source that isn't scraped from
