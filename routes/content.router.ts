@@ -114,6 +114,105 @@ function contentRangeStart(response: { headers: { get(name: string): string | nu
     return m ? Number(m[1]) : null;
 }
 
+/** Headers every upstream fetch of the proxy sends — see the comments in
+ *  `/cast-proxy` for why each one is there. */
+function upstreamHeadersFor(target: URL, refOverride: string): Record<string, string> {
+    return {
+        "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": refOverride || target.origin + "/",
+        ...(refOverride ? { Origin: new URL(refOverride).origin } : {}),
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "cross-site",
+    };
+}
+
+// Child-playlist prefetch. A player opening an HLS master (libmpv in the app,
+// hls.js, CAF) then opens every rendition playlist it names — video, each
+// audio language, each subtitle language — and libmpv/ffmpeg does it one at a
+// time before playing anything. A dozen sequential proxied fetches at ~0.35s
+// upstream each was most of the time-to-first-frame. So when a master passes
+// through, all its child playlists are fetched in parallel and parked here;
+// the player's own requests for them then answer from memory.
+//
+// Each entry is handed out ONCE and expires fast, so a live playlist's next
+// refresh still goes upstream — this only collapses the startup burst.
+const PREFETCH_TTL_MS = 20_000;
+const PREFETCH_MAX_CHILDREN = 40;
+const PREFETCH_MAX_ENTRIES = 500;
+type PrefetchedManifest = { text: string; servedFrom: URL };
+const manifestPrefetch = new Map<string, { at: number; result: Promise<PrefetchedManifest | null> }>();
+
+const prefetchKey = (url: URL, refOverride: string) => `${refOverride}|${url.href}`;
+
+function takePrefetched(url: URL, refOverride: string): Promise<PrefetchedManifest | null> | null {
+    const key = prefetchKey(url, refOverride);
+    const entry = manifestPrefetch.get(key);
+    if (!entry) return null;
+    manifestPrefetch.delete(key);
+    return Date.now() - entry.at < PREFETCH_TTL_MS ? entry.result : null;
+}
+
+/** The playlist URIs a master names (not segments, keys or I-frame lists). */
+function childPlaylistUris(text: string, source: URL): URL[] {
+    if (!text.includes("#EXT-X-STREAM-INF") && !text.includes("#EXT-X-MEDIA:")) return [];
+    const out: URL[] = [];
+    const lines = text.split("\n").map((l) => l.trim());
+    const add = (uri: string) => {
+        try {
+            out.push(new URL(uri, source));
+        } catch {
+            /* unparseable — the player will fail on it the normal way */
+        }
+    };
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith("#EXT-X-MEDIA:")) {
+            const m = /URI="([^"]+)"/.exec(line);
+            if (m) add(m[1]);
+        } else if (line.startsWith("#EXT-X-STREAM-INF")) {
+            const next = lines.slice(i + 1).find((l) => l && !l.startsWith("#"));
+            if (next) add(next);
+        }
+    }
+    return out.slice(0, PREFETCH_MAX_CHILDREN);
+}
+
+function prefetchChildPlaylists(master: string, servedFrom: URL, refOverride: string) {
+    const now = Date.now();
+    if (manifestPrefetch.size > PREFETCH_MAX_ENTRIES) {
+        for (const [key, entry] of manifestPrefetch) {
+            if (now - entry.at >= PREFETCH_TTL_MS) manifestPrefetch.delete(key);
+        }
+        if (manifestPrefetch.size > PREFETCH_MAX_ENTRIES) return;
+    }
+    for (const child of childPlaylistUris(master, servedFrom)) {
+        const key = prefetchKey(child, refOverride);
+        if (manifestPrefetch.has(key)) continue;
+        const result = (async (): Promise<PrefetchedManifest | null> => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), UPSTREAM_TTFB_MS);
+            try {
+                const { response, url } = await safeFetch(child, {
+                    signal: controller.signal,
+                    headers: upstreamHeadersFor(child, refOverride),
+                });
+                if (!response.ok) {
+                    await response.arrayBuffer().catch(() => {});
+                    return null;
+                }
+                return { text: await response.text(), servedFrom: url };
+            } catch {
+                return null; // the player's own request takes the normal path
+            } finally {
+                clearTimeout(timer);
+            }
+        })();
+        manifestPrefetch.set(key, { at: now, result });
+    }
+}
+
 function logSafeUrl(url: URL): string {
     const path = url.pathname.length > 80 ? url.pathname.slice(0, 80) + "…" : url.pathname;
     return url.host + path;
@@ -605,22 +704,13 @@ export function createContentRouter(
             inFlight?.abort();
         });
 
-        const upstreamHeaders: Record<string, string> = {
-            "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": refOverride || target.origin + "/",
-            ...(refOverride
-                ? { Origin: new URL(refOverride).origin }
-                : {}),
-            // Some CDNs 403 anything that doesn't look like a
-            // cross-origin XHR from a player page, and want all three
-            // of these — any two still fail. A real browser always
-            // sends them, so their *absence* is the anomaly and no
-            // upstream can be broken by having them.
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "cross-site",
-        };
+        // Referer defaults to the media host's own origin; `ref` overrides it
+        // (and adds Origin). The three sec-fetch-* headers are there because
+        // some CDNs 403 anything that doesn't look like a cross-origin XHR
+        // from a player page, and want all three of them — any two still
+        // fail. A real browser always sends them, so their *absence* is the
+        // anomaly and no upstream can be broken by having them.
+        const upstreamHeaders = upstreamHeadersFor(target, refOverride);
 
         /** One request, headers only; the timer is cleared once they arrive. */
         const fetchOnce = async (range: string | undefined) => {
@@ -663,6 +753,19 @@ export function createContentRouter(
                 await new Promise((r) => setTimeout(r, UPSTREAM_RETRY_DELAY_MS));
             }
         };
+
+        // A child playlist fetched ahead by its master (see manifestPrefetch).
+        const prefetched = req.headers.range ? null : takePrefetched(target, refOverride);
+        if (prefetched) {
+            const hit = await prefetched;
+            if (hit && !clientGone) {
+                res.set("Access-Control-Allow-Origin", "*");
+                res.set("Access-Control-Allow-Headers", "*");
+                res.set("Content-Type", "application/vnd.apple.mpegurl");
+                return res.send(rewriteHlsManifest(hit.text, hit.servedFrom, childProxyPrefix));
+            }
+            if (clientGone) return;
+        }
 
         try {
             // Forward Range so the Chromecast can seek inside media segments.
@@ -714,6 +817,7 @@ export function createContentRouter(
                         }
                     }
                 }
+                prefetchChildPlaylists(text, servedFrom, refOverride);
                 res.set("Content-Type", "application/vnd.apple.mpegurl");
                 return res.send(rewriteHlsManifest(text, servedFrom, childProxyPrefix));
             }
