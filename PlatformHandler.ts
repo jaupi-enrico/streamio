@@ -52,21 +52,73 @@ export class WebPlatformHandler extends PlatformHandler {
     }
   }
 
+  // How long past its TTL a listing is still served (stale) while a fresh copy
+  // is fetched in the background. A cold scrape costs 2–8s per request; past
+  // the TTL every visitor used to pay it again, which is what made browsing
+  // feel slow. Now only the very first visitor (or one after a day idle) waits.
+  private static readonly STALE_WINDOW = 60 * 60 * 24;
+
+  /** In-process single-flight: concurrent misses on one key share one scrape. */
+  private readonly inFlight = new Map<string, Promise<unknown>>();
+
+  private fetchAndStore<T>(
+    key: string,
+    ttl: number,
+    fn: () => Promise<T>,
+    isEmpty: (result: T) => boolean,
+    staleWindow: number
+  ): Promise<T> {
+    const pending = this.inFlight.get(key);
+    if (pending) return pending as Promise<T>;
+
+    const run = (async () => {
+      const result = await fn();
+      const empty = isEmpty(result);
+      const freshFor = empty ? WebPlatformHandler.EMPTY_TTL : ttl;
+      // An empty result is never kept around stale: it must self-heal fast.
+      const keepFor = freshFor + (empty ? 0 : staleWindow);
+      await this.redis
+        .set(key, { v: result, exp: Date.now() + freshFor * 1000 }, keepFor)
+        .catch(() => {});
+      return result;
+    })().finally(() => this.inFlight.delete(key));
+
+    this.inFlight.set(key, run);
+    return run;
+  }
+
+  /**
+   * Cache-aside with stale-while-revalidate. `staleWindow` 0 means a hard
+   * TTL — required for anything carrying signed, expiring URLs (servers,
+   * resolved video), where a stale answer is a broken one.
+   */
   private async withCache<T>(
     key: string,
     ttl: number,
     fn: () => Promise<T>,
     isEmpty: (result: T) => boolean = WebPlatformHandler.isEmptyResult,
-    skipCache = false
+    skipCache = false,
+    staleWindow = WebPlatformHandler.STALE_WINDOW
   ): Promise<T> {
     if (!skipCache) {
-      const cached = await this.redis.get<T>(key);
-      if (cached !== null && cached !== undefined) return cached;
+      const cached = await this.redis.get<any>(key).catch(() => null);
+      if (cached !== null && cached !== undefined) {
+        // Entries written before the envelope existed: plain value, own TTL.
+        if (typeof cached !== "object" || !("exp" in cached) || !("v" in cached)) {
+          return cached as T;
+        }
+        if (Date.now() >= cached.exp) {
+          // Stale: answer now, refresh behind it. A failed refresh keeps the
+          // stale copy, which beats an error for a listing.
+          this.fetchAndStore(key, ttl, fn, isEmpty, staleWindow).catch((err) =>
+            console.warn("[cache] background refresh failed", key, String(err?.message ?? err))
+          );
+        }
+        return cached.v as T;
+      }
     }
 
-    const result = await fn();
-    await this.redis.set(key, result, isEmpty(result) ? WebPlatformHandler.EMPTY_TTL : ttl);
-    return result;
+    return this.fetchAndStore(key, ttl, fn, isEmpty, staleWindow);
   }
 
   /**
@@ -147,8 +199,14 @@ export class WebPlatformHandler extends PlatformHandler {
     this.ensureReady();
 
     const key = `servers:${providerName}:${episodeId}:${contentType ?? "episode"}`;
-    return this.withCache(key, WebPlatformHandler.TTL.SERVERS, () =>
-      this.core.getServers(providerName, episodeId, contentType)
+    // Server entries carry signed embed tokens: never served stale.
+    return this.withCache(
+      key,
+      WebPlatformHandler.TTL.SERVERS,
+      () => this.core.getServers(providerName, episodeId, contentType),
+      WebPlatformHandler.isEmptyResult,
+      false,
+      0
     );
   }
 
@@ -201,7 +259,8 @@ export class WebPlatformHandler extends PlatformHandler {
       WebPlatformHandler.TTL.VIDEO,
       () => this.core.resolveVideo(providerName, server),
       WebPlatformHandler.isEmptyResult,
-      fresh
+      fresh,
+      0
     );
   }
 }
