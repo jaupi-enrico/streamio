@@ -254,8 +254,8 @@ export class LocalProvider
 
     const offset = (Math.max(1, page) - 1) * PAGE_SIZE;
     const rows = await this.db.all<LocalTitleRow>(
-      `SELECT * FROM local_titles WHERE title ILIKE $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-      [`%${q}%`, PAGE_SIZE, offset],
+      `SELECT * FROM local_titles WHERE title ILIKE $1 ESCAPE '\\' ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [`%${q.replace(/[\\%_]/g, "\\$&")}%`, PAGE_SIZE, offset],
     );
     return rows.map((r) => this.toItem(r));
   }
