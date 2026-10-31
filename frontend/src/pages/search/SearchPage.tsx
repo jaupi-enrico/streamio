@@ -126,6 +126,8 @@ export default function SearchPage(): JSX.Element {
   const families = useRef<ProviderFamilyView[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** Bumped per request so a slow, superseded response can't overwrite a newer one. */
+  const requestId = useRef(0);
 
   // ── URL / storage ──
 
@@ -225,8 +227,11 @@ export default function SearchPage(): JSX.Element {
   }
 
   async function load({ append = false } = {}) {
-    if (s.mode === "idle" || s.loading) return;
+    if (s.mode === "idle") return;
+    // A fresh search supersedes one in flight; only "Load more" must wait.
+    if (append && s.loading) return;
 
+    const mine = ++requestId.current;
     s.loading = true;
     s.error = null;
     if (!append) {
@@ -238,6 +243,7 @@ export default function SearchPage(): JSX.Element {
 
     try {
       const items = await fetchPage(s.page);
+      if (mine !== requestId.current) return;
       // Providers page by fixed-size batches and return fewer (or an echo of
       // the last page) at the end, so an empty page is the only reliable
       // end-of-results signal.
@@ -250,6 +256,7 @@ export default function SearchPage(): JSX.Element {
         s.items = s.items.concat(fresh);
       }
     } catch (err) {
+      if (mine !== requestId.current) return;
       s.loading = false;
       s.exhausted = true;
       s.error = err instanceof Error ? err.message : String(err);
